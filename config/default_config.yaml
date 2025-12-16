@@ -1,0 +1,105 @@
+# Orchestrator settings
+orchestrator:
+  max_iterations: 10
+  early_stopping_patience: 3
+  improvement_threshold: 0.01
+
+# Available backbones
+backbones:
+  resnet:
+    variants: ["resnet18", "resnet34", "resnet50", "resnet101", "resnet152"]
+    pretrained: true
+    memory_estimates_mb:
+      resnet18: 512
+      resnet34: 768
+      resnet50: 1024
+      resnet101: 1536
+      resnet152: 2048
+
+  efficientnet:
+    variants:
+      [
+        "efficientnet_b0",
+        "efficientnet_b1",
+        "efficientnet_b2",
+        "efficientnet_b3",
+        "efficientnet_b4",
+        "efficientnet_b5",
+        "efficientnet_b6",
+        "efficientnet_b7",
+      ]
+    pretrained: true
+    memory_estimates_mb:
+      efficientnet_b0: 512
+      efficientnet_b1: 640
+      efficientnet_b2: 768
+      efficientnet_b3: 1024
+      efficientnet_b4: 1280
+      efficientnet_b5: 1536
+      efficientnet_b6: 1792
+      efficientnet_b7: 2560
+
+  vit:
+    variants:
+      [
+        "vit_tiny_patch16_224",
+        "vit_small_patch16_224",
+        "vit_base_patch16_224",
+        "vit_large_patch16_224",
+      ]
+    pretrained: true
+    memory_estimates_mb:
+      vit_tiny_patch16_224: 384
+      vit_small_patch16_224: 768
+      vit_base_patch16_224: 1280
+      vit_large_patch16_224: 2560
+
+  convnext:
+    variants:
+      ["convnext_tiny", "convnext_small", "convnext_base", "convnext_large"]
+    pretrained: true
+    memory_estimates_mb:
+      convnext_tiny: 512
+      convnext_small: 768
+      convnext_base: 1280
+      convnext_large: 2048
+
+  mobilenet:
+    variants: ["mobilenetv3_small_100", "mobilenetv3_large_100"]
+    pretrained: true
+    memory_estimates_mb:
+      mobilenetv3_small_100: 256
+      mobilenetv3_large_100: 384
+
+# Fine-tuning strategies
+finetuning_strategies:
+  - name: "full_finetuning"
+    description: "Train all layers with same learning rate"
+    memory_multiplier: 3.0 # Optimizer states, gradients
+
+  - name: "head_only"
+    description: "Freeze backbone, train only classification head"
+    memory_multiplier: 1.5
+
+  - name: "gradual_unfreezing"
+    description: "Progressively unfreeze layers during training"
+    memory_multiplier: 2.5
+
+  - name: "discriminative_lr"
+    description: "Different learning rates for different layers"
+    memory_multiplier: 3.0
+
+# Training defaults
+training:
+  default_epochs: 50
+  default_batch_size: 32
+  default_learning_rate: 0.001
+  default_optimizer: "adamw"
+  default_scheduler: "cosine"
+  early_stopping_patience: 10
+
+# Simulation settings
+simulation:
+  noise_std: 0.02
+  base_accuracy_range: [0.6, 0.95]
+  epoch_time_seconds: 30

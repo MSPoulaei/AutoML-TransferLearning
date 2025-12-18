@@ -212,10 +212,11 @@ Analyze these results and provide:
             analysis = analysis_output.analysis
             suggestions = analysis_output.suggestions
 
+            improvement_str = f"{improvement:.4f}" if improvement is not None else "N/A"
             logger.info(
                 f"Training completed: {training_result.primary_metric_name.value}="
                 f"{training_result.primary_metric_value:.4f}, "
-                f"improvement={improvement:.4f if improvement else 'N/A'}"
+                f"improvement={improvement_str}"
             )
 
         return ExecutorResult(

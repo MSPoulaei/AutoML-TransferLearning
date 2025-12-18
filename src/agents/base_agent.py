@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import Any, Optional
+import os
 
-from openai import RateLimitError
+from openai import AsyncOpenAI, RateLimitError
 from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.models.openai import OpenAIChatModel
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -23,16 +24,19 @@ class BaseAgent(ABC):
         self,
         key_manager: APIKeyManager,
         model_name: str = "gpt-4o",
+        base_url: Optional[str] = None,
         temperature: float = 0.7,
         max_retries: int = 3,
     ):
         self.key_manager = key_manager
         self.model_name = model_name
+        self.base_url = base_url or "https://api.openai.com/v1"
         self.temperature = temperature
         self.max_retries = max_retries
         self._agent: Optional[Agent] = None
         self._current_key: Optional[str] = None
         self._call_count = 0
+        self._current_result_type: Optional[type] = None
 
     @abstractmethod
     def _get_system_prompt(self) -> str:
@@ -47,16 +51,23 @@ class BaseAgent(ABC):
     async def _create_agent(self, result_type: type) -> Agent:
         """Create a pydantic-ai agent with current API key."""
         self._current_key = await self.key_manager.get_key()
+        self._current_result_type = result_type  # Store for recreating agent
 
-        model = OpenAIModel(
+        # Set API key in environment for pydantic-ai to use
+        # This is a temporary workaround - pydantic-ai will pick it up automatically
+        os.environ["OPENAI_API_KEY"] = self._current_key
+        if self.base_url != "https://api.openai.com/v1":
+            os.environ["OPENAI_BASE_URL"] = self.base_url
+
+        # Create the model - it will use the environment variables
+        model = OpenAIChatModel(
             self.model_name,
-            api_key=self._current_key,
         )
 
         agent = Agent(
             model,
-            result_type=result_type,
-            system_prompt=self._get_system_prompt(),
+            output_type=result_type,
+            instructions=self._get_system_prompt(),
         )
 
         return agent
@@ -93,7 +104,7 @@ class BaseAgent(ABC):
 
                 # Get new key and recreate agent
                 self._current_key = await self.key_manager.get_key()
-                agent = await self._create_agent(type(agent.result_type))
+                agent = await self._create_agent(self._current_result_type)
 
                 last_exception = e
 
@@ -105,7 +116,7 @@ class BaseAgent(ABC):
                 if attempt < self.max_retries - 1:
                     # Try with different key
                     self._current_key = await self.key_manager.get_key()
-                    agent = await self._create_agent(type(agent.result_type))
+                    agent = await self._create_agent(self._current_result_type)
 
         raise last_exception or RuntimeError("Agent execution failed")
 

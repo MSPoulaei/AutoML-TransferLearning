@@ -22,14 +22,103 @@ app = typer.Typer(
 console = Console()
 
 
+def get_dataset_preset(preset_name: str) -> dict:
+    """
+    Get predefined configuration for famous datasets.
+
+    Args:
+        preset_name: Name of the dataset preset
+
+    Returns:
+        Dictionary with dataset configuration
+    """
+    presets = {
+        "cifar10": {
+            "num_classes": 10,
+            "num_samples": 50000,
+            "image_height": 32,
+            "image_width": 32,
+            "domain": "natural",
+            "domain_description": "CIFAR-10: 60,000 32x32 color images in 10 classes (airplane, automobile, bird, cat, deer, dog, frog, horse, ship, truck)",
+            "class_balance": "balanced",
+            "data_quality": "high",
+        },
+        "cifar100": {
+            "num_classes": 100,
+            "num_samples": 50000,
+            "image_height": 32,
+            "image_width": 32,
+            "domain": "fine_grained",
+            "domain_description": "CIFAR-100: 60,000 32x32 color images in 100 fine-grained classes grouped into 20 superclasses",
+            "class_balance": "balanced",
+            "data_quality": "high",
+        },
+        "mnist": {
+            "num_classes": 10,
+            "num_samples": 60000,
+            "image_height": 28,
+            "image_width": 28,
+            "domain": "document",
+            "domain_description": "MNIST: 70,000 28x28 grayscale images of handwritten digits (0-9)",
+            "class_balance": "balanced",
+            "data_quality": "high",
+        },
+        "fashion_mnist": {
+            "num_classes": 10,
+            "num_samples": 60000,
+            "image_height": 28,
+            "image_width": 28,
+            "domain": "natural",
+            "domain_description": "Fashion-MNIST: 70,000 28x28 grayscale images of fashion items (T-shirt, trouser, pullover, dress, coat, sandal, shirt, sneaker, bag, ankle boot)",
+            "class_balance": "balanced",
+            "data_quality": "high",
+        },
+        "svhn": {
+            "num_classes": 10,
+            "num_samples": 73257,
+            "image_height": 32,
+            "image_width": 32,
+            "domain": "document",
+            "domain_description": "SVHN: Street View House Numbers - real-world images of digits from Google Street View",
+            "class_balance": "slightly_imbalanced",
+            "data_quality": "medium",
+        },
+        "imagenet": {
+            "num_classes": 1000,
+            "num_samples": 1281167,
+            "image_height": 224,
+            "image_width": 224,
+            "domain": "natural",
+            "domain_description": "ImageNet: Large-scale dataset with 1000 object categories including animals, plants, objects, and scenes",
+            "class_balance": "balanced",
+            "data_quality": "high",
+        },
+    }
+
+    preset = presets.get(preset_name.lower())
+    if not preset:
+        available = ", ".join(presets.keys())
+        raise ValueError(
+            f"Unknown dataset preset '{preset_name}'. Available presets: {available}"
+        )
+
+    return preset
+
+
 @app.command()
 def run(
-    # Dataset information
-    num_classes: int = typer.Option(
-        ..., "--num-classes", "-c", help="Number of classification classes"
+    # Dataset preset or custom configuration
+    dataset_preset: Optional[str] = typer.Option(
+        None,
+        "--dataset",
+        help="Use a famous dataset preset: cifar10, cifar100, mnist, fashion_mnist, svhn, imagenet (overrides other dataset options)",
     ),
-    num_samples: int = typer.Option(
-        ..., "--num-samples", "-n", help="Number of training samples"
+    # Dataset information
+    num_classes: Optional[int] = typer.Option(
+        None, "--num-classes", "-c", help="Number of classification classes"
+    ),
+    num_samples: Optional[int] = typer.Option(
+        None, "--num-samples", "-n", help="Number of training samples"
     ),
     image_height: int = typer.Option(224, "--image-height", help="Image height"),
     image_width: int = typer.Option(224, "--image-width", help="Image width"),
@@ -39,8 +128,8 @@ def run(
         "-d",
         help="Dataset domain: natural, medical, satellite, document, fine_grained, industrial, artistic, other",
     ),
-    domain_description: str = typer.Option(
-        ..., "--domain-desc", help="Detailed description of the dataset domain"
+    domain_description: Optional[str] = typer.Option(
+        None, "--domain-desc", help="Detailed description of the dataset domain"
     ),
     primary_metric: str = typer.Option(
         "accuracy",
@@ -92,7 +181,11 @@ def run(
     """
     Run the transfer learning orchestration.
     
-    Example:
+    Examples:
+        # Using a famous dataset preset
+        python main.py run --dataset cifar10 --budget 5 --simulation
+        
+        # Using a custom dataset
         python main.py run --num-classes 10 --num-samples 5000 \\
             --domain natural --domain-desc "Natural scene images" \\
             --budget 5 --simulation
@@ -108,6 +201,47 @@ def run(
         )
         raise typer.Exit(1)
 
+    # Determine dataset configuration
+    if dataset_preset:
+        # Use preset configuration
+        try:
+            preset_config = get_dataset_preset(dataset_preset)
+            console.print(f"[cyan]Using dataset preset: {dataset_preset}[/cyan]")
+
+            # Override with preset values
+            num_classes = preset_config["num_classes"]
+            num_samples = preset_config["num_samples"]
+            image_height = preset_config["image_height"]
+            image_width = preset_config["image_width"]
+            domain = preset_config["domain"]
+            domain_description = preset_config["domain_description"]
+            class_balance = preset_config["class_balance"]
+
+            # Use preset data quality if available
+            data_quality = preset_config.get("data_quality", "high")
+
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1)
+    else:
+        # Custom dataset - validate required fields
+        if num_classes is None:
+            console.print(
+                "[red]Error: --num-classes is required when not using a dataset preset[/red]"
+            )
+            raise typer.Exit(1)
+        if num_samples is None:
+            console.print(
+                "[red]Error: --num-samples is required when not using a dataset preset[/red]"
+            )
+            raise typer.Exit(1)
+        if domain_description is None:
+            console.print(
+                "[red]Error: --domain-desc is required when not using a dataset preset[/red]"
+            )
+            raise typer.Exit(1)
+        data_quality = "high"
+
     # Create dataset info
     try:
         dataset_info = DatasetInfo(
@@ -118,15 +252,18 @@ def run(
             domain_description=domain_description,
             primary_metric=MetricType(primary_metric),
             class_balance=class_balance,
+            data_quality=data_quality,
+            dataset_name=dataset_preset,  # Store the preset name for auto-loading
         )
     except ValueError as e:
         console.print(f"[red]Invalid dataset configuration: {e}[/red]")
         raise typer.Exit(1)
 
-    # Initialize orchestrator
+    # Initialize orchestrator with per-agent settings
     orchestrator = Orchestrator(
         api_keys=settings.api_keys_list,
         model_name=settings.openai_model,
+        base_url=settings.openai_base_url,
         memory_limit_gb=memory_limit,
         simulation_mode=simulation,
         data_dir=data_dir,
@@ -134,6 +271,21 @@ def run(
         database_url=settings.database_url,
         max_retries=settings.max_retries_per_key,
         rate_limit_cooldown=settings.rate_limit_retry_delay,
+        # Per-agent settings
+        analyzer_api_keys=(
+            settings.get_agent_api_keys("analyzer")
+            if settings.analyzer_api_keys
+            else None
+        ),
+        analyzer_model=settings.get_agent_model("analyzer"),
+        analyzer_base_url=settings.get_agent_base_url("analyzer"),
+        executor_api_keys=(
+            settings.get_agent_api_keys("executor")
+            if settings.executor_api_keys
+            else None
+        ),
+        executor_model=settings.get_agent_model("executor"),
+        executor_base_url=settings.get_agent_base_url("executor"),
     )
 
     # Run orchestration
@@ -243,7 +395,7 @@ def show_experiment(
 def resume_experiment(
     experiment_id: str = typer.Argument(..., help="Experiment ID to resume"),
     additional_budget: int = typer.Option(
-        5, "--budget", "-b", help="Additional iterations to run"
+        3, "--budget", "-b", help="Additional iterations to run"
     ),
     simulation: bool = typer.Option(
         False, "--simulation", "-s", help="Use simulated training"
@@ -379,6 +531,72 @@ def export_results(
         json.dump(results, f, indent=2, default=str)
 
     console.print(f"[green]Results exported to {output_path}[/green]")
+
+
+@app.command()
+def list_datasets():
+    """List available dataset presets."""
+    from rich.table import Table
+
+    table = Table(title="Available Dataset Presets")
+    table.add_column("Name", style="cyan")
+    table.add_column("Classes", style="green")
+    table.add_column("Samples", style="yellow")
+    table.add_column("Image Size", style="magenta")
+    table.add_column("Domain", style="blue")
+
+    presets = {
+        "cifar10": {
+            "num_classes": 10,
+            "num_samples": 50000,
+            "image_size": "32x32",
+            "domain": "natural",
+        },
+        "cifar100": {
+            "num_classes": 100,
+            "num_samples": 50000,
+            "image_size": "32x32",
+            "domain": "fine_grained",
+        },
+        "mnist": {
+            "num_classes": 10,
+            "num_samples": 60000,
+            "image_size": "28x28",
+            "domain": "document",
+        },
+        "fashion_mnist": {
+            "num_classes": 10,
+            "num_samples": 60000,
+            "image_size": "28x28",
+            "domain": "natural",
+        },
+        "svhn": {
+            "num_classes": 10,
+            "num_samples": 73257,
+            "image_size": "32x32",
+            "domain": "document",
+        },
+        "imagenet": {
+            "num_classes": 1000,
+            "num_samples": 1281167,
+            "image_size": "224x224",
+            "domain": "natural",
+        },
+    }
+
+    for name, info in presets.items():
+        table.add_row(
+            name,
+            str(info["num_classes"]),
+            str(info["num_samples"]),
+            info["image_size"],
+            info["domain"],
+        )
+
+    console.print(table)
+    console.print(
+        "\n[cyan]Usage:[/cyan] python main.py run --dataset <preset_name> --budget 5 --simulation"
+    )
 
 
 if __name__ == "__main__":

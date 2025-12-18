@@ -57,9 +57,10 @@ class AnalyzerAgent(BaseAgent):
         self,
         key_manager: APIKeyManager,
         model_name: str = "gpt-4o",
+        base_url: Optional[str] = None,
         memory_limit_gb: float = 15.0,
     ):
-        super().__init__(key_manager, model_name)
+        super().__init__(key_manager, model_name, base_url=base_url)
         self.memory_limit_mb = memory_limit_gb * 1024
         self.backbone_registry = BackboneRegistry()
         self.strategy_registry = StrategyRegistry()

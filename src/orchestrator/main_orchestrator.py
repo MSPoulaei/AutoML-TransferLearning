@@ -40,6 +40,7 @@ class Orchestrator:
         self,
         api_keys: list[str],
         model_name: str = "gpt-4o",
+        base_url: str = "https://api.openai.com/v1",
         memory_limit_gb: float = 15.0,
         simulation_mode: bool = False,
         data_dir: Optional[str] = None,
@@ -47,13 +48,21 @@ class Orchestrator:
         database_url: str = "sqlite:///experiments/experiments.db",
         max_retries: int = 3,
         rate_limit_cooldown: int = 60,
+        # Per-agent settings
+        analyzer_api_keys: Optional[list[str]] = None,
+        analyzer_model: Optional[str] = None,
+        analyzer_base_url: Optional[str] = None,
+        executor_api_keys: Optional[list[str]] = None,
+        executor_model: Optional[str] = None,
+        executor_base_url: Optional[str] = None,
     ):
         """
         Initialize the orchestrator.
 
         Args:
-            api_keys: List of OpenAI API keys for rotation
-            model_name: OpenAI model to use
+            api_keys: List of OpenAI API keys for rotation (default for all agents)
+            model_name: OpenAI model to use (default for all agents)
+            base_url: OpenAI API base URL (default for all agents)
             memory_limit_gb: GPU memory limit in GB
             simulation_mode: If True, use simulated training
             data_dir: Directory containing dataset (for real training)
@@ -61,24 +70,41 @@ class Orchestrator:
             database_url: SQLAlchemy database URL
             max_retries: Max retries per API key
             rate_limit_cooldown: Cooldown seconds after rate limit
+            analyzer_api_keys: API keys for Analyzer agent (overrides default)
+            analyzer_model: Model for Analyzer agent (overrides default)
+            analyzer_base_url: Base URL for Analyzer agent (overrides default)
+            executor_api_keys: API keys for Executor agent (overrides default)
+            executor_model: Model for Executor agent (overrides default)
+            executor_base_url: Base URL for Executor agent (overrides default)
         """
-        # Initialize API key manager
-        self.key_manager = APIKeyManager(
-            api_keys=api_keys,
+        # Initialize per-agent API key managers
+        analyzer_keys = analyzer_api_keys if analyzer_api_keys else api_keys
+        executor_keys = executor_api_keys if executor_api_keys else api_keys
+
+        self.analyzer_key_manager = APIKeyManager(
+            api_keys=analyzer_keys,
             max_failures_per_key=max_retries,
             rate_limit_cooldown=rate_limit_cooldown,
         )
 
-        # Initialize agents
+        self.executor_key_manager = APIKeyManager(
+            api_keys=executor_keys,
+            max_failures_per_key=max_retries,
+            rate_limit_cooldown=rate_limit_cooldown,
+        )
+
+        # Initialize agents with per-agent settings
         self.analyzer = AnalyzerAgent(
-            key_manager=self.key_manager,
-            model_name=model_name,
+            key_manager=self.analyzer_key_manager,
+            model_name=analyzer_model if analyzer_model else model_name,
+            base_url=analyzer_base_url if analyzer_base_url else base_url,
             memory_limit_gb=memory_limit_gb,
         )
 
         self.executor = ExecutorAgent(
-            key_manager=self.key_manager,
-            model_name=model_name,
+            key_manager=self.executor_key_manager,
+            model_name=executor_model if executor_model else model_name,
+            base_url=executor_base_url if executor_base_url else base_url,
             simulation_mode=simulation_mode,
             data_dir=data_dir,
         )
@@ -99,7 +125,9 @@ class Orchestrator:
         ensure_directories(checkpoint_dir, "experiments", "logs")
 
         logger.info(
-            f"Orchestrator initialized: model={model_name}, "
+            f"Orchestrator initialized: "
+            f"analyzer_model={self.analyzer.model_name}, "
+            f"executor_model={self.executor.model_name}, "
             f"memory={memory_limit_gb}GB, simulation={simulation_mode}"
         )
 
@@ -359,11 +387,17 @@ class Orchestrator:
 
         console.print(table)
 
-        # API key stats
-        key_stats = self.key_manager.get_stats()
+        # API key stats from both agents
+        analyzer_stats = self.analyzer_key_manager.get_stats()
+        executor_stats = self.executor_key_manager.get_stats()
+        total_calls = analyzer_stats["total_calls"] + executor_stats["total_calls"]
+        rate_limited = (
+            analyzer_stats["rate_limited_keys"] + executor_stats["rate_limited_keys"]
+        )
+
         console.print(
-            f"\nAPI Key Stats: {key_stats['total_calls']} total calls, "
-            f"{key_stats['rate_limited_keys']} rate limited"
+            f"\nAPI Key Stats: {total_calls} total calls, "
+            f"{rate_limited} rate limited keys"
         )
 
         console.print(f"\nCheckpoint saved: {self._state.experiment_id}")

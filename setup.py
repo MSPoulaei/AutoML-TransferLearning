@@ -1,4 +1,19 @@
 from setuptools import setup, find_packages
+from pathlib import Path
+
+
+# Read requirements from requirements.txt
+def read_requirements():
+    requirements_path = Path(__file__).parent / "requirements.txt"
+    with open(requirements_path, encoding="utf-8") as f:
+        requirements = []
+        for line in f:
+            line = line.strip()
+            # Skip empty lines and comments
+            if line and not line.startswith("#"):
+                requirements.append(line)
+        return requirements
+
 
 setup(
     name="transfer-learning-orchestrator",
@@ -7,21 +22,7 @@ setup(
     author="AI Research Team",
     python_requires=">=3.10",
     packages=find_packages(),
-    install_requires=[
-        "pydantic>=2.5.0",
-        "pydantic-ai>=0.0.24",
-        "openai>=1.12.0",
-        "torch>=2.1.0",
-        "torchvision>=0.16.0",
-        "timm>=0.9.12",
-        "python-dotenv>=1.0.0",
-        "pyyaml>=6.0.1",
-        "sqlalchemy>=2.0.0",
-        "rich>=13.7.0",
-        "loguru>=0.7.2",
-        "typer>=0.9.0",
-        "tenacity>=8.2.3",
-    ],
+    install_requires=read_requirements(),
     entry_points={
         "console_scripts": [
             "tl-orchestrator=main:app",

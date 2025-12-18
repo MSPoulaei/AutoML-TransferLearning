@@ -43,10 +43,11 @@ class ExecutorAgent(BaseAgent):
         self,
         key_manager: APIKeyManager,
         model_name: str = "gpt-4o",
+        base_url: Optional[str] = None,
         simulation_mode: bool = False,
         data_dir: Optional[str] = None,
     ):
-        super().__init__(key_manager, model_name)
+        super().__init__(key_manager, model_name, base_url=base_url)
         self.simulation_mode = simulation_mode
         self.data_dir = data_dir
 

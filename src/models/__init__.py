@@ -1,5 +1,8 @@
 from .schemas import (
     DatasetInfo,
+    DatasetDomain,
+    MetricType,
+    FinetuningType,
     BackboneConfig,
     FinetuningStrategy,
     TrainingConfig,
@@ -14,6 +17,9 @@ from .training_strategies import StrategyRegistry
 
 __all__ = [
     "DatasetInfo",
+    "DatasetDomain",
+    "MetricType",
+    "FinetuningType",
     "BackboneConfig",
     "FinetuningStrategy",
     "TrainingConfig",

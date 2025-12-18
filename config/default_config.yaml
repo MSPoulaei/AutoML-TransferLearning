@@ -4,6 +4,20 @@ orchestrator:
   early_stopping_patience: 3
   improvement_threshold: 0.01
 
+# Agent-specific settings
+# Each agent can have its own API keys, model, and base_url
+# If not specified, will use the default settings from .env
+agents:
+  analyzer:
+    # model: "gpt-4o"  # Override model for analyzer
+    # base_url: "https://api.openai.com/v1"  # Override base URL
+    # api_keys: []  # Override API keys (set in .env as ANALYZER_API_KEYS)
+
+  executor:
+    # model: "gpt-4o-mini"  # Override model for executor
+    # base_url: "https://api.openai.com/v1"  # Override base URL
+    # api_keys: []  # Override API keys (set in .env as EXECUTOR_API_KEYS)
+
 # Available backbones
 backbones:
   resnet:

@@ -207,31 +207,56 @@ class RealTrainer(Trainer):
             ]
         )
 
-        if self.data_dir and os.path.exists(self.data_dir):
-            # Load from directory
-            full_dataset = datasets.ImageFolder(
-                root=self.data_dir, transform=train_transform
+        # Try loading from torchvision datasets first if dataset_name is provided
+        if dataset_info.dataset_name:
+            train_dataset = self._load_torchvision_dataset(
+                dataset_info.dataset_name, train=True, transform=train_transform
+            )
+            val_dataset = self._load_torchvision_dataset(
+                dataset_info.dataset_name, train=False, transform=val_transform
             )
 
-            # Split into train/val
-            val_size = int(len(full_dataset) * dataset_info.validation_split)
-            train_size = len(full_dataset) - val_size
-
-            train_dataset, val_dataset = random_split(
-                full_dataset, [train_size, val_size]
-            )
-
-            # Apply val transform to validation set
-            val_dataset.dataset.transform = val_transform
+            if train_dataset is not None and val_dataset is not None:
+                logger.info(
+                    f"Loaded {dataset_info.dataset_name}: {len(train_dataset)} train, {len(val_dataset)} val"
+                )
+            else:
+                logger.warning(
+                    f"Failed to load {dataset_info.dataset_name}, falling back to directory loading"
+                )
+                train_dataset = None
+                val_dataset = None
         else:
-            # Create synthetic dataset for testing
-            logger.warning("No data directory provided, using synthetic data")
-            train_dataset = self._create_synthetic_dataset(
-                dataset_info, train_transform, is_train=True
-            )
-            val_dataset = self._create_synthetic_dataset(
-                dataset_info, val_transform, is_train=False
-            )
+            train_dataset = None
+            val_dataset = None
+
+        # Fall back to directory-based loading
+        if train_dataset is None or val_dataset is None:
+            if self.data_dir and os.path.exists(self.data_dir):
+                # Load from directory
+                full_dataset = datasets.ImageFolder(
+                    root=self.data_dir, transform=train_transform
+                )
+
+                # Split into train/val
+                val_size = int(len(full_dataset) * dataset_info.validation_split)
+                train_size = len(full_dataset) - val_size
+
+                train_dataset, val_dataset = random_split(
+                    full_dataset, [train_size, val_size]
+                )
+
+                # Apply val transform to validation set
+                val_dataset.dataset.transform = val_transform
+            else:
+                # Create synthetic dataset for testing
+                logger.warning("No data directory provided, using synthetic data")
+                train_dataset = self._create_synthetic_dataset(
+                    dataset_info, train_transform, is_train=True
+                )
+                val_dataset = self._create_synthetic_dataset(
+                    dataset_info, val_transform, is_train=False
+                )
 
         train_loader = DataLoader(
             train_dataset,
@@ -250,6 +275,57 @@ class RealTrainer(Trainer):
         )
 
         return train_loader, val_loader
+
+    def _load_torchvision_dataset(
+        self,
+        dataset_name: str,
+        train: bool,
+        transform: transforms.Compose,
+    ):
+        """
+        Load a torchvision dataset by name.
+
+        Args:
+            dataset_name: Name of the dataset (e.g., 'cifar10', 'mnist')
+            train: Whether to load training or test set
+            transform: Transform to apply to images
+
+        Returns:
+            Dataset instance or None if not found
+        """
+        dataset_classes = {
+            "cifar10": datasets.CIFAR10,
+            "cifar100": datasets.CIFAR100,
+            "mnist": datasets.MNIST,
+            "fashion_mnist": datasets.FashionMNIST,
+            "svhn": datasets.SVHN,
+        }
+
+        dataset_name_lower = dataset_name.lower()
+
+        if dataset_name_lower not in dataset_classes:
+            return None
+
+        try:
+            dataset_class = dataset_classes[dataset_name_lower]
+            data_root = self.data_dir if self.data_dir else "./data"
+
+            # SVHN has different parameter names
+            if dataset_name_lower == "svhn":
+                split = "train" if train else "test"
+                dataset = dataset_class(
+                    root=data_root, split=split, transform=transform, download=True
+                )
+            else:
+                dataset = dataset_class(
+                    root=data_root, train=train, transform=transform, download=True
+                )
+
+            return dataset
+
+        except Exception as e:
+            logger.error(f"Failed to load {dataset_name}: {e}")
+            return None
 
     def _create_synthetic_dataset(
         self,

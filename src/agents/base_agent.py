@@ -178,7 +178,8 @@ class BaseAgent(ABC):
                 # Report success
                 await self.key_manager.report_success(self._current_key)
 
-                return result.data
+                # In pydantic-ai >= 1.33, the return value is AgentRunResult with .output attribute
+                return result.output
 
             except RateLimitError as e:
                 logger.warning(f"Rate limit hit on attempt {attempt + 1}")

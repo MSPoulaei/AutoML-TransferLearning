@@ -94,7 +94,10 @@ Learning rate guidelines:
 - full_finetuning: 1e-4 to 1e-3
 - gradual_unfreezing: start with 1e-3, decrease for unfrozen layers
 
-IMPORTANT: In your reasoning text, use only standard ASCII characters. Do not use fancy Unicode characters like em-dashes, en-dashes, fancy quotes, or special spaces. Use regular hyphens (-), regular quotes ("), and regular spaces only.
+CRITICAL OUTPUT FORMAT REQUIREMENTS:
+1. expected_performance: MUST be a decimal between 0.0 and 1.0 (e.g., 0.95 for 95%, NOT 95)
+2. confidence: MUST be a decimal between 0.0 and 1.0 (e.g., 0.8 for 80%, NOT 80)
+3. In your reasoning text, use only standard ASCII characters. Do not use fancy Unicode characters like em-dashes, en-dashes, fancy quotes, or special spaces. Use regular hyphens (-), regular quotes ("), and regular spaces only.
 
 Always provide clear reasoning for your choices and learn from previous results."""
 

@@ -72,6 +72,8 @@ Key indicators to watch:
 - Oscillating loss: Learning rate may be too high
 - No improvement: May need different architecture or strategy
 
+IMPORTANT: In your analysis text, use only standard ASCII characters. Do not use fancy Unicode characters like em-dashes, en-dashes, fancy quotes, narrow spaces, or other special Unicode characters. Use regular hyphens (-), regular quotes ("), and regular spaces only.
+
 Provide specific, actionable feedback that can guide the Analyzer Agent."""
 
     def _build_analysis_prompt(

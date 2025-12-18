@@ -94,6 +94,8 @@ Learning rate guidelines:
 - full_finetuning: 1e-4 to 1e-3
 - gradual_unfreezing: start with 1e-3, decrease for unfrozen layers
 
+IMPORTANT: In your reasoning text, use only standard ASCII characters. Do not use fancy Unicode characters like em-dashes, en-dashes, fancy quotes, or special spaces. Use regular hyphens (-), regular quotes ("), and regular spaces only.
+
 Always provide clear reasoning for your choices and learn from previous results."""
 
     def _build_prompt(self, context: AnalyzerContext) -> str:

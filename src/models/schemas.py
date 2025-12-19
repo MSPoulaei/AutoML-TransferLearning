@@ -138,7 +138,7 @@ class TrainingConfig(BaseModel):
     strategy: FinetuningStrategy
 
     # Training hyperparameters
-    epochs: int = Field(default=50, ge=1, le=500)
+    epochs: int = Field(default=10, ge=1, le=20)
     batch_size: int = Field(default=32, ge=1, le=512)
     optimizer: str = Field(default="adamw")
     scheduler: str = Field(default="cosine")

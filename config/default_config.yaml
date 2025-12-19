@@ -105,7 +105,7 @@ finetuning_strategies:
 
 # Training defaults
 training:
-  default_epochs: 50
+  default_epochs: 10
   default_batch_size: 32
   default_learning_rate: 0.001
   default_optimizer: "adamw"

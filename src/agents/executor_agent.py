@@ -20,17 +20,25 @@ logger = get_logger(__name__)
 class ExecutorAnalysis(BaseModel):
     """Structured analysis from the Executor Agent."""
 
-    analysis: str = Field(..., description="Detailed analysis of training results")
-    key_observations: list[str] = Field(default_factory=list)
+    analysis: str = Field(
+        ...,
+        description="Comprehensive analysis of training results. Start with this field first. Include: overview of training performance, comparison of train vs validation metrics, identification of issues or patterns, evaluation of learning curves, and comparison to previous experiments if applicable.",
+    )
+    key_observations: list[str] = Field(
+        default_factory=list,
+        description="List of key observations from the training process (e.g., 'Large train-val gap indicates overfitting', 'Metric plateau after epoch 15')",
+    )
     suggestions: list[str] = Field(
-        default_factory=list, description="Suggestions for next iteration"
+        default_factory=list,
+        description="Actionable suggestions for the next iteration (e.g., 'Increase dropout', 'Reduce learning rate', 'Try different backbone')",
     )
     convergence_assessment: str = Field(
         default="unknown",
-        description="Assessment of model convergence: converged, converging, not_converging, overfitting",
+        description="Assessment of model convergence state. Must be one of: 'converged', 'converging', 'not_converging', 'overfitting'",
     )
     recommended_changes: dict = Field(
-        default_factory=dict, description="Specific parameter changes recommended"
+        default_factory=dict,
+        description="Specific parameter changes recommended as key-value pairs (e.g., {'learning_rate': 0.0001, 'dropout': 0.3})",
     )
 
 
@@ -60,6 +68,8 @@ class ExecutorAgent(BaseAgent):
     def _get_system_prompt(self) -> str:
         return """You are an expert machine learning engineer analyzing training results.
 
+CRITICAL: Always begin your response with a detailed analysis section that explains your observations and reasoning before providing specific suggestions.
+
 Your role is to:
 1. Analyze training metrics and learning curves
 2. Identify issues (overfitting, underfitting, convergence problems)
@@ -72,7 +82,18 @@ Key indicators to watch:
 - Oscillating loss: Learning rate may be too high
 - No improvement: May need different architecture or strategy
 
-IMPORTANT: In your analysis text, use only standard ASCII characters. Do not use fancy Unicode characters like em-dashes, en-dashes, fancy quotes, narrow spaces, or other special Unicode characters. Use regular hyphens (-), regular quotes ("), and regular spaces only.
+IMPORTANT OUTPUT FORMAT:
+1. START WITH ANALYSIS: Begin your response with the 'analysis' field containing a comprehensive evaluation of the training results
+2. In your analysis text, use only standard ASCII characters. Do not use fancy Unicode characters like em-dashes, en-dashes, fancy quotes, narrow spaces, or other special Unicode characters. Use regular hyphens (-), regular quotes ("), and regular spaces only.
+
+Your analysis should include:
+- Overview of training performance and convergence
+- Comparison of training vs validation metrics
+- Identification of specific issues or patterns
+- Context from training history and learning curves
+- Comparison to previous experiments (if applicable)
+
+After your analysis, provide key_observations, suggestions, convergence_assessment, and recommended_changes.
 
 Provide specific, actionable feedback that can guide the Analyzer Agent."""
 

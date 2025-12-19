@@ -34,17 +34,53 @@ class AnalyzerContext(BaseModel):
 class AnalyzerOutput(BaseModel):
     """Structured output from the Analyzer Agent."""
 
-    backbone_family: str
-    backbone_variant: str
-    finetuning_strategy: str
-    learning_rate: float
-    batch_size: int
-    epochs: int
-    dropout: float = 0.2
-    label_smoothing: float = 0.1
-    reasoning: str
-    expected_performance: float = Field(ge=0, le=1)
-    confidence: float = Field(ge=0, le=1)
+    reasoning: str = Field(
+        ...,
+        description="Detailed explanation of your analysis and decision-making process. Start with this field first. Include: dataset analysis, backbone selection rationale, strategy justification, hyperparameter reasoning, and how previous results influenced your recommendations.",
+    )
+    backbone_family: str = Field(
+        ...,
+        description="The backbone family to use (e.g., 'resnet', 'efficientnet', 'convnext')",
+    )
+    backbone_variant: str = Field(
+        ...,
+        description="The specific variant of the backbone (e.g., 'resnet50', 'efficientnet_b2')",
+    )
+    finetuning_strategy: str = Field(
+        ...,
+        description="The fine-tuning strategy to use (e.g., 'head_only', 'full_finetuning', 'gradual_unfreezing')",
+    )
+    learning_rate: float = Field(
+        ..., description="The learning rate for training (e.g., 0.001, 0.0001)"
+    )
+    batch_size: int = Field(
+        ..., description="The batch size for training (must be positive integer)"
+    )
+    epochs: int = Field(..., description="Number of training epochs (typically 10-50)")
+    dropout: float = Field(
+        default=0.2,
+        ge=0,
+        le=0.9,
+        description="Dropout rate for regularization (0.0-0.9, default 0.2)",
+    )
+    label_smoothing: float = Field(
+        default=0.1,
+        ge=0,
+        le=0.3,
+        description="Label smoothing factor for regularization (0.0-0.3, default 0.1)",
+    )
+    expected_performance: float = Field(
+        ...,
+        ge=0,
+        le=1,
+        description="Expected performance metric as a decimal between 0.0 and 1.0 (e.g., 0.95 for 95%)",
+    )
+    confidence: float = Field(
+        ...,
+        ge=0,
+        le=1,
+        description="Confidence in this recommendation as a decimal between 0.0 and 1.0 (e.g., 0.8 for 80%)",
+    )
 
 
 class AnalyzerAgent(BaseAgent):
@@ -69,6 +105,8 @@ class AnalyzerAgent(BaseAgent):
         return """You are an expert machine learning engineer specializing in transfer learning for image classification.
 
 Your role is to analyze dataset characteristics and previous experiment results to recommend optimal training configurations.
+
+CRITICAL: Always begin your response with a detailed reasoning section that explains your thought process before making specific recommendations.
 
 Key responsibilities:
 1. Select appropriate backbone architectures based on dataset size, complexity, and domain
@@ -95,9 +133,17 @@ Learning rate guidelines:
 - gradual_unfreezing: start with 1e-3, decrease for unfrozen layers
 
 CRITICAL OUTPUT FORMAT REQUIREMENTS:
-1. expected_performance: MUST be a decimal between 0.0 and 1.0 (e.g., 0.95 for 95%, NOT 95)
-2. confidence: MUST be a decimal between 0.0 and 1.0 (e.g., 0.8 for 80%, NOT 80)
-3. In your reasoning text, use only standard ASCII characters. Do not use fancy Unicode characters like em-dashes, en-dashes, fancy quotes, or special spaces. Use regular hyphens (-), regular quotes ("), and regular spaces only.
+1. START WITH REASONING: Begin your response with the 'reasoning' field containing a detailed explanation of your analysis and decision-making process
+2. expected_performance: MUST be a decimal between 0.0 and 1.0 (e.g., 0.95 for 95%, NOT 95)
+3. confidence: MUST be a decimal between 0.0 and 1.0 (e.g., 0.8 for 80%, NOT 80)
+4. In your reasoning text, use only standard ASCII characters. Do not use fancy Unicode characters like em-dashes, en-dashes, fancy quotes, or special spaces. Use regular hyphens (-), regular quotes ("), and regular spaces only.
+
+Your reasoning should cover:
+- Analysis of dataset characteristics (size, domain, complexity)
+- Rationale for backbone selection
+- Justification for fine-tuning strategy choice
+- Explanation of hyperparameter decisions
+- How previous results influenced your recommendations (if applicable)
 
 Always provide clear reasoning for your choices and learn from previous results."""
 

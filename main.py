@@ -2,6 +2,9 @@ import asyncio
 import sys
 from pathlib import Path
 from typing import Optional
+import zipfile
+import json
+from datetime import datetime
 
 import typer
 from rich.console import Console
@@ -105,6 +108,98 @@ def get_dataset_preset(preset_name: str) -> dict:
     return preset
 
 
+def zip_experiment_results(
+    experiment_id: str,
+    settings: Settings,
+    output_dir: str = ".",
+) -> str:
+    """
+    Zip experiment results including checkpoints, logs, and metrics.
+
+    Args:
+        experiment_id: The experiment ID
+        settings: Settings object
+        output_dir: Directory to save the zip file
+
+    Returns:
+        Path to the created zip file
+    """
+    from src.orchestrator import CheckpointManager, ExperimentTracker
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_filename = f"{experiment_id}_results_{timestamp}.zip"
+    zip_path = Path(output_dir) / zip_filename
+
+    checkpoint_manager = CheckpointManager(settings.checkpoint_dir)
+    tracker = ExperimentTracker(settings.database_url)
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        # Add checkpoint file
+        checkpoint_file = (
+            Path(settings.checkpoint_dir) / f"{experiment_id}_checkpoint.json"
+        )
+        if checkpoint_file.exists():
+            zipf.write(checkpoint_file, f"checkpoint/{checkpoint_file.name}")
+
+        # Add experiment summary and history as JSON
+        summary = tracker.get_experiment_summary(experiment_id)
+        if summary:
+            summary_json = json.dumps(summary, indent=2, default=str)
+            zipf.writestr(f"{experiment_id}_summary.json", summary_json)
+
+        history = tracker.get_experiment_history(experiment_id)
+        if history:
+            history_data = {
+                "experiment_id": experiment_id,
+                "total_iterations": len(history),
+                "iterations": [
+                    {
+                        "iteration": r.iteration,
+                        "backbone": r.recommendation.training_config.backbone.full_name,
+                        "strategy": r.recommendation.training_config.strategy.strategy_type.value,
+                        "metric": (
+                            r.result.training_result.primary_metric_value
+                            if r.result.training_result
+                            else None
+                        ),
+                        "success": r.result.success,
+                        "error": (
+                            r.result.error_message if not r.result.success else None
+                        ),
+                    }
+                    for r in history
+                ],
+            }
+            history_json = json.dumps(history_data, indent=2, default=str)
+            zipf.writestr(f"{experiment_id}_history.json", history_json)
+
+        # Add logs if they exist
+        log_file = Path(settings.log_file)
+        if log_file.exists():
+            zipf.write(log_file, f"logs/{log_file.name}")
+
+        # Add a README with experiment info
+        readme_content = f"""# Experiment Results: {experiment_id}
+
+## Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+## Contents:
+- checkpoint/{experiment_id}_checkpoint.json: Full experiment state and configuration
+- {experiment_id}_summary.json: Experiment summary statistics
+- {experiment_id}_history.json: Detailed iteration history
+- logs/: Training logs (if available)
+
+## Best Result:
+{summary.get('best_metric_value', 'N/A') if summary else 'N/A'}
+
+## Total Iterations:
+{summary.get('total_iterations', 'N/A') if summary else 'N/A'}
+"""
+        zipf.writestr("README.md", readme_content)
+
+    return str(zip_path)
+
+
 @app.command()
 def run(
     # Dataset preset or custom configuration
@@ -176,6 +271,16 @@ def run(
     # Logging
     log_level: str = typer.Option(
         "INFO", "--log-level", help="Logging level: DEBUG, INFO, WARNING, ERROR"
+    ),
+    # Output options
+    zip_results: bool = typer.Option(
+        False, "--zip-results", "-z", help="Zip experiment results after completion"
+    ),
+    output_dir: str = typer.Option(
+        ".",
+        "--output-dir",
+        "-o",
+        help="Directory to save zip file (default: current directory)",
     ),
 ):
     """
@@ -306,6 +411,26 @@ def run(
                 f"\n[bold green]Best result: "
                 f"{final_state.best_metric_value:.4f}[/bold green]"
             )
+
+        # Zip results if requested
+        if zip_results:
+            console.print("\n[cyan]Creating results archive...[/cyan]")
+            try:
+                zip_path = zip_experiment_results(
+                    experiment_id=final_state.experiment_id,
+                    settings=settings,
+                    output_dir=output_dir,
+                )
+                console.print(
+                    f"[bold green]Results archived to: {zip_path}[/bold green]"
+                )
+                console.print(
+                    "[cyan]You can download this file from Kaggle output.[/cyan]"
+                )
+            except Exception as zip_error:
+                console.print(
+                    f"[yellow]Warning: Failed to create zip archive: {zip_error}[/yellow]"
+                )
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted by user. State saved.[/yellow]")
@@ -531,6 +656,46 @@ def export_results(
         json.dump(results, f, indent=2, default=str)
 
     console.print(f"[green]Results exported to {output_path}[/green]")
+
+
+@app.command()
+def zip_experiment(
+    experiment_id: str = typer.Argument(..., help="Experiment ID to zip"),
+    output_dir: str = typer.Option(
+        ".",
+        "--output-dir",
+        "-o",
+        help="Directory to save zip file (default: current directory)",
+    ),
+):
+    """Create a zip archive of experiment results."""
+    settings = get_settings()
+
+    from src.orchestrator import CheckpointManager
+
+    checkpoint_manager = CheckpointManager(settings.checkpoint_dir)
+
+    if not checkpoint_manager.exists(experiment_id):
+        console.print(f"[red]No checkpoint found for {experiment_id}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[cyan]Creating archive for experiment {experiment_id}...[/cyan]")
+
+    try:
+        zip_path = zip_experiment_results(
+            experiment_id=experiment_id,
+            settings=settings,
+            output_dir=output_dir,
+        )
+        console.print(f"[bold green]Results archived to: {zip_path}[/bold green]")
+
+        # Show zip file size
+        zip_size = Path(zip_path).stat().st_size / (1024 * 1024)  # MB
+        console.print(f"[cyan]Archive size: {zip_size:.2f} MB[/cyan]")
+
+    except Exception as e:
+        console.print(f"[red]Error creating archive: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command()

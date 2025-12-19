@@ -4,6 +4,8 @@
 
 The system now supports famous datasets with automatic downloading and configuration!
 
+> **🎯 Running on Kaggle?** Check out [KAGGLE_GUIDE.md](KAGGLE_GUIDE.md) for Kaggle-specific instructions with automatic result zipping!
+
 ### Step 1: View Available Datasets
 
 ```bash

@@ -35,3 +35,5 @@ experiments/*
 # Data
 data/
 datasets/
+tests/test_dataset_presets.py
+Thesis.ipynb

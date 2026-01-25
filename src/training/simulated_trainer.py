@@ -11,7 +11,7 @@ from src.models import (
     TrainingResult,
     FinetuningType,
 )
-from src.utils import get_logger
+from src.utils import get_logger, estimate_flops, estimate_inference_flops
 from .trainer import Trainer
 
 logger = get_logger(__name__)
@@ -114,6 +114,34 @@ class SimulatedTrainer(Trainer):
             config, dataset_info, len(train_loss_history)
         )
 
+        # Estimate FLOPs based on model size
+        model_params = self._estimate_model_params(config.backbone.variant)
+        total_flops = estimate_flops(
+            num_samples=dataset_info.num_samples,
+            batch_size=config.batch_size,
+            epochs=len(train_loss_history),
+            model_params=model_params,
+            image_size=config.backbone.input_size,
+        )
+        flops_per_epoch = (
+            total_flops / len(train_loss_history) if len(train_loss_history) > 0 else 0
+        )
+
+        # Estimate inference FLOPs (validation per epoch, assume 20% val split)
+        val_samples = int(dataset_info.num_samples * 0.2)
+        inference_flops = estimate_inference_flops(
+            num_samples=val_samples,
+            batch_size=config.batch_size,
+            model_params=model_params,
+            image_size=config.backbone.input_size,
+        ) * len(train_loss_history)
+
+        inference_flops_per_sample = (
+            inference_flops / (val_samples * len(train_loss_history))
+            if len(train_loss_history) > 0 and val_samples > 0
+            else 0
+        )
+
         result = TrainingResult(
             config=config,
             train_loss=train_loss_history[-1],
@@ -125,6 +153,10 @@ class SimulatedTrainer(Trainer):
             best_epoch=best_epoch,
             training_time_seconds=simulated_time,
             stopped_early=stopped_early,
+            total_flops=total_flops,
+            flops_per_epoch=flops_per_epoch,
+            inference_flops=inference_flops,
+            inference_flops_per_sample=inference_flops_per_sample,
             train_loss_history=train_loss_history,
             val_loss_history=val_loss_history,
             metric_history=metric_history,
@@ -133,7 +165,8 @@ class SimulatedTrainer(Trainer):
 
         logger.info(
             f"[SIMULATION] Training completed: "
-            f"{dataset_info.primary_metric.value}={best_metric:.4f}"
+            f"{dataset_info.primary_metric.value}={best_metric:.4f}, "
+            f"Training FLOPs: {total_flops:.2e}, Inference FLOPs: {inference_flops:.2e}"
         )
 
         return result
@@ -245,6 +278,35 @@ class SimulatedTrainer(Trainer):
         base_time *= model_factor
 
         return base_time * epochs_trained
+
+    def _estimate_model_params(self, variant: str) -> int:
+        """Estimate number of parameters for common model variants."""
+        # Approximate parameter counts for common models
+        param_estimates = {
+            "resnet18": 11_689_512,
+            "resnet34": 21_797_672,
+            "resnet50": 25_557_032,
+            "resnet101": 44_549_160,
+            "resnet152": 60_192_808,
+            "efficientnet_b0": 5_288_548,
+            "efficientnet_b1": 7_794_184,
+            "efficientnet_b2": 9_109_994,
+            "efficientnet_b3": 12_233_232,
+            "efficientnet_b4": 19_341_616,
+            "vit_base_patch16_224": 86_567_656,
+            "vit_large_patch16_224": 304_326_632,
+            "densenet121": 7_978_856,
+            "mobilenetv2": 3_504_872,
+        }
+
+        # Try to find exact match or similar variant
+        variant_lower = variant.lower()
+        for key, params in param_estimates.items():
+            if key in variant_lower or variant_lower in key:
+                return params
+
+        # Default estimate based on common range
+        return 25_000_000
 
     def cleanup(self):
         """No cleanup needed for simulation."""

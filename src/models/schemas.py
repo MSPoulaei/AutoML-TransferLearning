@@ -196,6 +196,19 @@ class TrainingResult(BaseModel):
     training_time_seconds: float
     stopped_early: bool = False
 
+    # Computational metrics
+    total_flops: float = Field(
+        default=0.0, description="Total FLOPs (floating point operations) for training"
+    )
+    flops_per_epoch: float = Field(default=0.0, description="Average FLOPs per epoch")
+    inference_flops: float = Field(
+        default=0.0,
+        description="Total FLOPs for inference/validation across all epochs",
+    )
+    inference_flops_per_sample: float = Field(
+        default=0.0, description="Average inference FLOPs per sample"
+    )
+
     # History
     train_loss_history: list[float] = Field(default_factory=list)
     val_loss_history: list[float] = Field(default_factory=list)
@@ -232,6 +245,12 @@ class AnalyzerRecommendation(BaseModel):
     memory_check_passed: bool = True
     estimated_memory_gb: float = 0
 
+    # API usage tracking
+    input_tokens: int = Field(default=0, description="Input tokens used")
+    output_tokens: int = Field(default=0, description="Output tokens generated")
+    total_tokens: int = Field(default=0, description="Total tokens used")
+    api_cost: float = Field(default=0.0, description="API cost in USD")
+
 
 class ExecutorResult(BaseModel):
     """Result from the Executor Agent."""
@@ -251,6 +270,12 @@ class ExecutorResult(BaseModel):
     improvement: Optional[float] = None
     is_best_so_far: bool = False
 
+    # API usage tracking
+    input_tokens: int = Field(default=0, description="Input tokens used")
+    output_tokens: int = Field(default=0, description="Output tokens generated")
+    total_tokens: int = Field(default=0, description="Total tokens used")
+    api_cost: float = Field(default=0.0, description="API cost in USD")
+
 
 class ExperimentRecord(BaseModel):
     """Record of a single experiment iteration."""
@@ -267,6 +292,15 @@ class ExperimentRecord(BaseModel):
     # Budget tracking
     api_calls_used: int = 0
     compute_time_seconds: float = 0
+    total_tokens_used: int = Field(
+        default=0, description="Total tokens used in iteration"
+    )
+    total_api_cost: float = Field(
+        default=0.0, description="Total API cost for iteration"
+    )
+    total_flops: float = Field(
+        default=0.0, description="Total FLOPs for training in iteration"
+    )
 
 
 class OrchestratorState(BaseModel):

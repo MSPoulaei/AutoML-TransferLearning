@@ -12,13 +12,26 @@ from torchvision import transforms, datasets
 import timm
 from tqdm import tqdm
 
+try:
+    from fvcore.nn import FlopCountAnalysis, flop_count_table
+
+    FVCORE_AVAILABLE = True
+except ImportError:
+    FVCORE_AVAILABLE = False
+    logger = None  # Will be set later
+
 from src.models import (
     DatasetInfo,
     TrainingConfig,
     TrainingResult,
     FinetuningType,
 )
-from src.utils import get_logger, get_gpu_memory_info
+from src.utils import (
+    get_logger,
+    get_gpu_memory_info,
+    estimate_flops,
+    estimate_inference_flops,
+)
 from .trainer import Trainer
 
 logger = get_logger(__name__)
@@ -50,9 +63,19 @@ class RealTrainer(Trainer):
 
         logger.info(f"RealTrainer initialized with device: {self.device}")
 
+        if not FVCORE_AVAILABLE:
+            logger.warning(
+                "fvcore library not available. FLOPS profiling will use estimation. "
+                "Install with: pip install fvcore"
+            )
+
         self.model = None
         self.optimizer = None
         self.scheduler = None
+
+        # Cache for FLOPs profiling
+        self._flops_per_sample_forward = None
+        self._flops_profiled = False
 
     async def train(
         self,
@@ -75,6 +98,9 @@ class RealTrainer(Trainer):
         # Create model
         self.model = self._create_model(config, dataset_info)
         self.model = self.model.to(self.device)
+
+        # Profile FLOPs once before training (cached for efficiency)
+        self._profile_flops_once(train_loader, config)
 
         # Apply fine-tuning strategy
         self._apply_finetuning_strategy(config)
@@ -152,6 +178,21 @@ class RealTrainer(Trainer):
         # Get model size
         model_size = self._get_model_size()
 
+        # Get model FLOPs using cached profiling results
+        # Training FLOPs: forward + backward (≈3x forward pass)
+        flops_per_epoch = self._get_training_flops(len(train_loader.dataset))
+        total_flops = flops_per_epoch * epochs_trained
+
+        # Inference FLOPs: forward pass only
+        inference_flops_per_epoch = self._get_inference_flops(len(val_loader.dataset))
+        inference_flops = inference_flops_per_epoch * epochs_trained
+
+        inference_flops_per_sample = (
+            inference_flops / (len(val_loader.dataset) * epochs_trained)
+            if epochs_trained > 0 and len(val_loader.dataset) > 0
+            else 0
+        )
+
         result = TrainingResult(
             config=config,
             train_loss=train_loss_history[-1],
@@ -163,6 +204,10 @@ class RealTrainer(Trainer):
             best_epoch=best_epoch,
             training_time_seconds=training_time,
             stopped_early=stopped_early,
+            total_flops=total_flops,
+            flops_per_epoch=flops_per_epoch,
+            inference_flops=inference_flops,
+            inference_flops_per_sample=inference_flops_per_sample,
             train_loss_history=train_loss_history,
             val_loss_history=val_loss_history,
             metric_history=metric_history,
@@ -171,7 +216,8 @@ class RealTrainer(Trainer):
 
         logger.info(
             f"Training completed: {dataset_info.primary_metric.value}={best_metric:.4f}, "
-            f"Time: {training_time:.1f}s"
+            f"Time: {training_time:.1f}s, Training FLOPs: {total_flops:.2e}, "
+            f"Inference FLOPs: {inference_flops:.2e}"
         )
 
         return result
@@ -689,6 +735,96 @@ class RealTrainer(Trainer):
         buffer_size = sum(b.nelement() * b.element_size() for b in self.model.buffers())
 
         return (param_size + buffer_size) / (1024 * 1024)
+
+    def _profile_flops_once(
+        self,
+        data_loader: DataLoader,
+        config: TrainingConfig,
+    ) -> None:
+        """
+        Profile FLOPs once at the start of training and cache the result.
+        This minimizes overhead by avoiding repeated profiling.
+        """
+        if self._flops_profiled:
+            return  # Already profiled
+
+        logger.info("Profiling model FLOPs (one-time overhead)...")
+        start_time = time.time()
+
+        if not FVCORE_AVAILABLE:
+            logger.warning("fvcore not available, will use estimation")
+            self._flops_per_sample_forward = None
+            self._flops_profiled = True
+            return
+
+        try:
+            # Get a sample batch
+            sample_batch = next(iter(data_loader))[0]
+            sample_input = sample_batch[:1].to(self.device)  # Single sample
+
+            # Profile forward pass
+            self.model.eval()
+            with torch.no_grad():
+                flops = FlopCountAnalysis(self.model, sample_input)
+                self._flops_per_sample_forward = flops.total()
+
+            self._flops_profiled = True
+            elapsed = time.time() - start_time
+
+            logger.info(
+                f"FLOPS profiling completed in {elapsed:.2f}s. "
+                f"Forward pass: {self._flops_per_sample_forward:,} FLOPs/sample"
+            )
+
+        except Exception as e:
+            logger.warning(f"FLOPS profiling failed: {e}, will use estimation")
+            self._flops_per_sample_forward = None
+            self._flops_profiled = True
+
+    def _get_training_flops(self, num_samples: int) -> float:
+        """
+        Get total training FLOPs using cached profiling.
+        Training = forward + backward ≈ 3x forward pass.
+        """
+        if self._flops_per_sample_forward is not None:
+            # Use profiled value (3x for forward + backward)
+            return float(self._flops_per_sample_forward * num_samples * 3)
+        else:
+            # Fallback to estimation
+            model_params = sum(p.numel() for p in self.model.parameters())
+            return estimate_flops(
+                num_samples=num_samples,
+                batch_size=1,  # Already per-sample calculation
+                epochs=1,
+                model_params=model_params,
+                image_size=(
+                    self.model.default_cfg.get("input_size", (3, 224, 224))[1:]
+                    if hasattr(self.model, "default_cfg")
+                    else (224, 224)
+                ),
+            )
+
+    def _get_inference_flops(self, num_samples: int) -> float:
+        """
+        Get total inference FLOPs using cached profiling.
+        Inference = forward pass only.
+        """
+        if self._flops_per_sample_forward is not None:
+            # Use profiled value (1x for forward only)
+            return float(self._flops_per_sample_forward * num_samples)
+        else:
+            # Fallback to estimation
+            model_params = sum(p.numel() for p in self.model.parameters())
+            return estimate_inference_flops(
+                num_samples=num_samples,
+                batch_size=1,  # Already per-sample calculation
+                model_params=model_params,
+                image_size=(
+                    self.model.default_cfg.get("input_size", (3, 224, 224))[1:]
+                    if hasattr(self.model, "default_cfg")
+                    else (224, 224)
+                ),
+            )
 
     def cleanup(self):
         """Clean up GPU memory."""

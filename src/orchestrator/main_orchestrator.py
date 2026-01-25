@@ -221,6 +221,7 @@ class Orchestrator:
                         dataset_info=dataset_info,
                         previous_results=previous_results,
                         iteration=iteration,
+                        total_budget=budget,
                     )
 
                     console.print(
@@ -268,6 +269,14 @@ class Orchestrator:
                         )
 
                     # Record experiment
+                    total_tokens = recommendation.total_tokens + result.total_tokens
+                    total_cost = recommendation.api_cost + result.api_cost
+                    total_flops = (
+                        result.training_result.total_flops
+                        if result.training_result
+                        else 0.0
+                    )
+
                     record = ExperimentRecord(
                         experiment_id=experiment_id,
                         iteration=iteration,
@@ -281,6 +290,9 @@ class Orchestrator:
                             if result.training_result
                             else 0
                         ),
+                        total_tokens_used=total_tokens,
+                        total_api_cost=total_cost,
+                        total_flops=total_flops,
                     )
 
                     self._state.experiment_history.append(record)

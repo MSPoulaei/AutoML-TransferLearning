@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, Optional, Dict
 import os
 import json
 
@@ -13,7 +13,7 @@ from tenacity import (
     retry_if_exception_type,
 )
 
-from src.utils import APIKeyManager, get_logger
+from src.utils import APIKeyManager, get_logger, calculate_cost
 
 logger = get_logger(__name__)
 
@@ -121,6 +121,12 @@ class BaseAgent(ABC):
         self._call_count = 0
         self._current_result_type: Optional[type] = None
 
+        # Token and cost tracking
+        self._total_input_tokens = 0
+        self._total_output_tokens = 0
+        self._total_cost = 0.0
+        self._last_call_tokens: Dict[str, int] = {}
+
     @abstractmethod
     def _get_system_prompt(self) -> str:
         """Get the system prompt for this agent."""
@@ -174,6 +180,9 @@ class BaseAgent(ABC):
                     result = await agent.run(prompt, deps=deps)
                 else:
                     result = await agent.run(prompt)
+
+                # Extract token usage from the result
+                self._extract_token_usage(result)
 
                 # Report success
                 await self.key_manager.report_success(self._current_key)
@@ -231,7 +240,81 @@ class BaseAgent(ABC):
 
         raise last_exception or RuntimeError("Agent execution failed")
 
+    def _extract_token_usage(self, result) -> None:
+        """Extract token usage from API result and update tracking."""
+        try:
+            # pydantic-ai stores usage information in the result
+            if hasattr(result, "usage"):
+                usage = result.usage()
+                input_tokens = getattr(usage, "input_tokens", 0) or 0
+                output_tokens = getattr(usage, "output_tokens", 0) or 0
+            elif hasattr(result, "_usage"):
+                # Alternative location
+                usage = result._usage
+                input_tokens = getattr(usage, "input_tokens", 0) or 0
+                output_tokens = getattr(usage, "output_tokens", 0) or 0
+            else:
+                # Try to access from messages
+                input_tokens = 0
+                output_tokens = 0
+                if hasattr(result, "messages"):
+                    for msg in result.messages:
+                        if hasattr(msg, "usage"):
+                            input_tokens += getattr(msg.usage, "input_tokens", 0) or 0
+                            output_tokens += getattr(msg.usage, "output_tokens", 0) or 0
+
+            # Update totals
+            self._total_input_tokens += input_tokens
+            self._total_output_tokens += output_tokens
+
+            # Calculate cost for this call
+            call_cost = calculate_cost(self.model_name, input_tokens, output_tokens)
+            self._total_cost += call_cost
+
+            # Store last call info
+            self._last_call_tokens = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "cost": call_cost,
+            }
+
+            logger.debug(
+                f"Token usage - Input: {input_tokens}, Output: {output_tokens}, "
+                f"Total: {input_tokens + output_tokens}, Cost: ${call_cost:.4f}"
+            )
+
+        except Exception as e:
+            logger.warning(f"Could not extract token usage: {e}")
+            self._last_call_tokens = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cost": 0.0,
+            }
+
     @property
     def call_count(self) -> int:
         """Get total API calls made by this agent."""
         return self._call_count
+
+    @property
+    def total_tokens(self) -> int:
+        """Get total tokens used by this agent."""
+        return self._total_input_tokens + self._total_output_tokens
+
+    @property
+    def total_cost(self) -> float:
+        """Get total cost incurred by this agent."""
+        return self._total_cost
+
+    def get_last_call_usage(self) -> Dict[str, Any]:
+        """Get token usage and cost from the last API call."""
+        return self._last_call_tokens.copy()
+
+    def reset_usage_tracking(self) -> None:
+        """Reset all usage tracking counters."""
+        self._total_input_tokens = 0
+        self._total_output_tokens = 0
+        self._total_cost = 0.0
+        self._last_call_tokens = {}

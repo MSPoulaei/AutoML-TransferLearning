@@ -80,3 +80,63 @@ def estimate_training_time(
     batches_per_epoch = (num_samples + batch_size - 1) // batch_size
     total_batches = batches_per_epoch * epochs
     return (total_batches * estimated_batch_time_ms) / 1000
+
+
+def estimate_flops(
+    num_samples: int,
+    batch_size: int,
+    epochs: int,
+    model_params: int,
+    image_size: tuple[int, int] = (224, 224),
+) -> float:
+    """
+    Estimate FLOPs (floating point operations) for training.
+
+    Args:
+        num_samples: Number of training samples
+        batch_size: Batch size
+        epochs: Number of epochs
+        model_params: Number of model parameters
+        image_size: Input image size (H, W)
+
+    Returns:
+        Estimated total FLOPs
+    """
+    batches_per_epoch = (num_samples + batch_size - 1) // batch_size
+
+    # Rough estimate: 2 FLOPs per parameter per sample (forward + backward)
+    # Plus additional ops for activations and loss
+    flops_per_sample = model_params * 2 * image_size[0] * image_size[1]
+    flops_per_batch = flops_per_sample * batch_size
+    total_flops = flops_per_batch * batches_per_epoch * epochs
+
+    return float(total_flops)
+
+
+def estimate_inference_flops(
+    num_samples: int,
+    batch_size: int,
+    model_params: int,
+    image_size: tuple[int, int] = (224, 224),
+) -> float:
+    """
+    Estimate FLOPs (floating point operations) for inference only.
+
+    Args:
+        num_samples: Number of samples to run inference on
+        batch_size: Batch size
+        model_params: Number of model parameters
+        image_size: Input image size (H, W)
+
+    Returns:
+        Estimated total inference FLOPs
+    """
+    batches = (num_samples + batch_size - 1) // batch_size
+
+    # Forward pass only: ~1 FLOP per parameter per sample
+    # Multiplied by image dimensions for spatial operations
+    flops_per_sample = model_params * image_size[0] * image_size[1]
+    flops_per_batch = flops_per_sample * batch_size
+    total_flops = flops_per_batch * batches
+
+    return float(total_flops)

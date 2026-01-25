@@ -5,6 +5,14 @@ from .helpers import (
     get_gpu_memory_info,
     format_time,
     generate_experiment_id,
+    estimate_flops,
+    estimate_inference_flops,
+)
+from .pricing import (
+    calculate_cost,
+    format_cost,
+    get_model_pricing,
+    OPENAI_PRICING,
 )
 
 __all__ = [
@@ -15,4 +23,10 @@ __all__ = [
     "get_gpu_memory_info",
     "format_time",
     "generate_experiment_id",
+    "estimate_flops",
+    "estimate_inference_flops",
+    "calculate_cost",
+    "format_cost",
+    "get_model_pricing",
+    "OPENAI_PRICING",
 ]

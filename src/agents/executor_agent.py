@@ -76,24 +76,45 @@ Your role is to:
 3. Provide actionable suggestions for the next iteration
 4. Compare current results to previous experiments
 
-Key indicators to watch:
-- Train/Val loss gap: Large gap indicates overfitting
-- Metric plateau: May indicate learning rate too low or model capacity reached
-- Oscillating loss: Learning rate may be too high
-- No improvement: May need different architecture or strategy
+DIAGNOSTIC GUIDELINES:
+- Train/Val loss gap >0.15: Moderate overfitting -> increase dropout/label_smoothing
+- Train/Val loss gap >0.30: Severe overfitting -> increase regularization significantly or reduce model capacity
+- Val loss decreasing slowly: Possible underfitting -> try larger model or full_finetuning
+- Val loss not improving for 3+ epochs: Learning rate may be too low or model converged
+- Val loss oscillating: Learning rate too high -> reduce by 50%
+- Metric improved <0.01: Marginal gain -> consider different approach
+- Best epoch < epochs/2: Training too long -> reduce epochs
+- Best epoch = last epoch: May need more epochs or different stopping criteria
+
+CONVERGENCE ASSESSMENT CRITERIA:
+- "converged": Val loss stable for 3+ epochs, train-val gap <0.15, metric near expected
+- "converging": Val loss still decreasing, reasonable train-val gap
+- "not_converging": Val loss not improving after 5+ epochs, or oscillating
+- "overfitting": Train-val gap >0.20, or val loss increasing while train loss decreasing
+
+SUGGESTION PRIORITIES:
+1. If overfitting: Increase dropout, label_smoothing, or try simpler strategy (full->gradual->head_only)
+2. If underfitting: Try larger backbone, full_finetuning, or increase epochs
+3. If marginal improvement: Try different backbone family
+4. If converged well: Minor hyperparameter tuning or try more efficient model
 
 IMPORTANT OUTPUT FORMAT:
 1. START WITH ANALYSIS: Begin your response with the 'analysis' field containing a comprehensive evaluation of the training results
 2. In your analysis text, use only standard ASCII characters. Do not use fancy Unicode characters like em-dashes, en-dashes, fancy quotes, narrow spaces, or other special Unicode characters. Use regular hyphens (-), regular quotes ("), and regular spaces only.
 
 Your analysis should include:
-- Overview of training performance and convergence
+- Quantitative assessment: train/val loss gap, improvement over previous best
+- Learning curve analysis: convergence pattern, best epoch timing
 - Comparison of training vs validation metrics
-- Identification of specific issues or patterns
-- Context from training history and learning curves
-- Comparison to previous experiments (if applicable)
+- Identification of specific issues with evidence
+- Context from previous experiments (if applicable)
+- Clear diagnosis with supporting metrics
 
-After your analysis, provide key_observations, suggestions, convergence_assessment, and recommended_changes.
+After your analysis, provide:
+- key_observations: 2-4 specific, evidence-based observations
+- suggestions: 2-4 prioritized, actionable recommendations
+- convergence_assessment: One of [converged, converging, not_converging, overfitting]
+- recommended_changes: Specific parameter changes as dict (e.g., {\"dropout\": 0.3, \"learning_rate\": 0.0005})
 
 Provide specific, actionable feedback that can guide the Analyzer Agent."""
 
@@ -235,12 +256,25 @@ Analyze these results and provide:
             analysis = analysis_output.analysis
             suggestions = analysis_output.suggestions
 
+            # Get token usage from the API call
+            usage = self.get_last_call_usage()
+
             improvement_str = f"{improvement:.4f}" if improvement is not None else "N/A"
             logger.info(
                 f"Training completed: {training_result.primary_metric_name.value}="
                 f"{training_result.primary_metric_value:.4f}, "
-                f"improvement={improvement_str}"
+                f"improvement={improvement_str}, "
+                f"tokens={usage.get('total_tokens', 0)}, cost=${usage.get('cost', 0.0):.4f}"
             )
+
+        else:
+            # No LLM call if training failed, use default usage values
+            usage = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cost": 0.0,
+            }
 
         return ExecutorResult(
             iteration=iteration,
@@ -251,4 +285,8 @@ Analyze these results and provide:
             suggestions=suggestions,
             improvement=improvement,
             is_best_so_far=is_best,
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+            api_cost=usage.get("cost", 0.0),
         )

@@ -77,38 +77,25 @@ Your role is to:
 4. Compare current results to previous experiments
 
 DIAGNOSTIC GUIDELINES:
-- Train/Val loss gap >0.15: Moderate overfitting -> increase dropout/label_smoothing
-- Train/Val loss gap >0.30: Severe overfitting -> increase regularization significantly or reduce model capacity
-- Val loss decreasing slowly: Possible underfitting -> try larger model or full_finetuning
-- Val loss not improving for 3+ epochs: Learning rate may be too low or model converged
-- Val loss oscillating: Learning rate too high -> reduce by 50%
-- Metric improved <0.01: Marginal gain -> consider different approach
-- Best epoch < epochs/2: Training too long -> reduce epochs
-- Best epoch = last epoch: May need more epochs or different stopping criteria
+- Interpret train/val loss gaps relative to the loss scale and number of classes — a gap that signals overfitting on a 2-class problem may be normal on a 200-class problem.
+- A consistently increasing val loss while train loss decreases is a strong overfitting signal regardless of absolute values.
+- Val loss oscillating across epochs usually indicates the learning rate is too high.
+- If the best epoch is very early (e.g., first 20-30% of training), the model may have converged early or overfit — consider fewer epochs or more regularization.
+- If the best epoch is the last epoch, the model may still be improving — consider more epochs.
+- Marginal metric improvement (<0.01 absolute) after significant training suggests either saturation or the wrong configuration.
 
 CONVERGENCE ASSESSMENT CRITERIA:
-- "converged": Val loss stable for 3+ epochs, train-val gap <0.15, metric near expected
-- "converging": Val loss still decreasing, reasonable train-val gap
-- "not_converging": Val loss not improving after 5+ epochs, or oscillating
-- "overfitting": Train-val gap >0.20, or val loss increasing while train loss decreasing
+- "converged": Val loss has been stable for several epochs and metric is near expected; further training is unlikely to help.
+- "converging": Val loss is still decreasing with a healthy train-val relationship; more training or a similar config may help.
+- "not_converging": Val loss is not improving despite several epochs, or is oscillating — something structural needs to change.
+- "overfitting": Val loss is increasing or diverging from train loss; the model is memorising training data.
 
-SUGGESTION PRIORITIES:
-1. If overfitting: Increase dropout, label_smoothing, or switch to a parameter-efficient strategy:
-   - 'lora' (rank 8-16) for transformer backbones (vit, deit, swin_transformer, convnext)
-   - 'adapter' (size 32-64) for any backbone (CNN or transformer)
-   - Or simplify to 'head_only' for extreme overfitting
-2. If underfitting: Try larger backbone, 'full_finetuning', or increase epochs.
-   For PEFT strategies: suggest increasing lora_rank or adapter_size in recommended_changes.
-3. If marginal improvement: Try different backbone family or switch strategy type
-4. If converged well: Minor hyperparameter tuning or try a more efficient model
-
-PEFT-SPECIFIC DIAGNOSTICS:
-- LoRA trains ~1-5% of params: low train-val gap is normal and healthy
-- If LoRA underfit, suggest increasing lora_rank (e.g., 8->16->32) in recommended_changes
-- Adapter trains only adapter + head: similarly low overfitting risk
-- If adapter underfit, suggest increasing adapter_size (e.g., 64->128) in recommended_changes
-- LoRA works best on transformers (vit, deit, swin_transformer, convnext)
-- Adapter works on any backbone including CNNs (resnet, efficientnet)
+SUGGESTION PRIORITIES (use your judgment — these are considerations, not rules):
+1. If overfitting: consider increasing regularization (dropout, label_smoothing, weight decay), reducing model capacity, or switching to a more parameter-efficient strategy.
+2. If underfitting or not converging: consider a larger/more expressive backbone, a strategy with more trainable parameters, a higher learning rate, or more epochs.
+3. If using a PEFT strategy (lora/adapter) and underfitting: lora_rank or adapter_size may be too small — suggest increasing them in recommended_changes.
+4. If marginal improvement: consider a qualitatively different backbone family or strategy rather than incremental tuning.
+5. If converged well: consider minor hyperparameter refinements or a more efficient architecture with similar capacity.
 
 IMPORTANT OUTPUT FORMAT:
 1. START WITH ANALYSIS: Begin your response with the 'analysis' field containing a comprehensive evaluation of the training results

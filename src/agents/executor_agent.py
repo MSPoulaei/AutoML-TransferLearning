@@ -50,7 +50,7 @@ class ExecutorAgent(BaseAgent):
     def __init__(
         self,
         key_manager: APIKeyManager,
-        model_name: str = "gpt-4o",
+        model_name: str = "gpt-4o-mini",
         base_url: Optional[str] = None,
         simulation_mode: bool = False,
         data_dir: Optional[str] = None,
@@ -93,10 +93,22 @@ CONVERGENCE ASSESSMENT CRITERIA:
 - "overfitting": Train-val gap >0.20, or val loss increasing while train loss decreasing
 
 SUGGESTION PRIORITIES:
-1. If overfitting: Increase dropout, label_smoothing, or try simpler strategy (full->gradual->head_only)
-2. If underfitting: Try larger backbone, full_finetuning, or increase epochs
-3. If marginal improvement: Try different backbone family
-4. If converged well: Minor hyperparameter tuning or try more efficient model
+1. If overfitting: Increase dropout, label_smoothing, or switch to a parameter-efficient strategy:
+   - 'lora' (rank 8-16) for transformer backbones (vit, deit, swin_transformer, convnext)
+   - 'adapter' (size 32-64) for any backbone (CNN or transformer)
+   - Or simplify to 'head_only' for extreme overfitting
+2. If underfitting: Try larger backbone, 'full_finetuning', or increase epochs.
+   For PEFT strategies: suggest increasing lora_rank or adapter_size in recommended_changes.
+3. If marginal improvement: Try different backbone family or switch strategy type
+4. If converged well: Minor hyperparameter tuning or try a more efficient model
+
+PEFT-SPECIFIC DIAGNOSTICS:
+- LoRA trains ~1-5% of params: low train-val gap is normal and healthy
+- If LoRA underfit, suggest increasing lora_rank (e.g., 8->16->32) in recommended_changes
+- Adapter trains only adapter + head: similarly low overfitting risk
+- If adapter underfit, suggest increasing adapter_size (e.g., 64->128) in recommended_changes
+- LoRA works best on transformers (vit, deit, swin_transformer, convnext)
+- Adapter works on any backbone including CNNs (resnet, efficientnet)
 
 IMPORTANT OUTPUT FORMAT:
 1. START WITH ANALYSIS: Begin your response with the 'analysis' field containing a comprehensive evaluation of the training results
@@ -195,11 +207,21 @@ Analyze these results and provide:
         Returns:
             ExecutorResult with training results and analysis
         """
-        logger.info(f"Executor Agent starting iteration {iteration}")
+        logger.info(
+            f"Executor Agent starting iteration {iteration} — "
+            f"backbone={recommendation.training_config.backbone.full_name}, "
+            f"strategy={recommendation.training_config.strategy.strategy_type.value}, "
+            f"lr={recommendation.training_config.strategy.learning_rate}, "
+            f"batch={recommendation.training_config.batch_size}, "
+            f"epochs={recommendation.training_config.epochs}"
+        )
 
         # Check memory before training
         if not recommendation.memory_check_passed:
-            logger.warning("Memory check failed, but proceeding with training")
+            logger.warning(
+                f"Memory check failed: estimated {recommendation.estimated_memory_gb:.2f}GB "
+                f"may exceed limit — proceeding anyway"
+            )
 
         # Execute training
         try:
@@ -219,6 +241,8 @@ Analyze these results and provide:
         # Analyze results if training succeeded
         analysis = ""
         suggestions = []
+        convergence_assessment = "unknown"
+        recommended_changes: dict = {}
         improvement = None
         is_best = False
 
@@ -255,15 +279,21 @@ Analyze these results and provide:
 
             analysis = analysis_output.analysis
             suggestions = analysis_output.suggestions
+            convergence_assessment = analysis_output.convergence_assessment
+            recommended_changes = analysis_output.recommended_changes
 
             # Get token usage from the API call
             usage = self.get_last_call_usage()
 
-            improvement_str = f"{improvement:.4f}" if improvement is not None else "N/A"
+            improvement_str = f"{improvement:+.4f}" if improvement is not None else "N/A"
             logger.info(
-                f"Training completed: {training_result.primary_metric_name.value}="
-                f"{training_result.primary_metric_value:.4f}, "
+                f"Executor analysis done: "
+                f"{training_result.primary_metric_name.value}={training_result.primary_metric_value:.4f}, "
                 f"improvement={improvement_str}, "
+                f"convergence={analysis_output.convergence_assessment}, "
+                f"train_loss={training_result.train_loss:.4f}, "
+                f"val_loss={training_result.val_loss:.4f}, "
+                f"best_epoch={training_result.best_epoch}/{training_result.epochs_trained}, "
                 f"tokens={usage.get('total_tokens', 0)}, cost=${usage.get('cost', 0.0):.4f}"
             )
 
@@ -283,6 +313,8 @@ Analyze these results and provide:
             error_message=error_message,
             analysis=analysis,
             suggestions=suggestions,
+            convergence_assessment=convergence_assessment,
+            recommended_changes=recommended_changes,
             improvement=improvement,
             is_best_so_far=is_best,
             input_tokens=usage.get("input_tokens", 0),

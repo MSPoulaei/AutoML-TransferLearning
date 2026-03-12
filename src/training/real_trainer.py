@@ -6,11 +6,20 @@ from typing import Optional, Any
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader, random_split
+from torch.cuda.amp import GradScaler, autocast
+from torch.utils.data import DataLoader, WeightedRandomSampler, random_split
 from torchvision import transforms, datasets
 import timm
 from tqdm import tqdm
+
+try:
+    from peft import get_peft_model, LoraConfig
+
+    PEFT_AVAILABLE = True
+except ImportError:
+    PEFT_AVAILABLE = False
 
 try:
     from fvcore.nn import FlopCountAnalysis, flop_count_table
@@ -35,6 +44,75 @@ from src.utils import (
 from .trainer import Trainer
 
 logger = get_logger(__name__)
+
+# LoRA target modules per backbone family.
+# peft matches these against the *last* component of each module's dotted name.
+_LORA_TARGET_MODULES: dict[str, list[str]] = {
+    # Transformer families — target attention projections + MLP linear layers
+    "vit": ["qkv", "proj", "fc1", "fc2"],
+    "deit": ["qkv", "proj", "fc1", "fc2"],
+    "swin_transformer": ["qkv", "proj", "fc1", "fc2"],
+    # ConvNeXt uses nn.Linear for its MLP blocks (pwconv1/2)
+    "convnext": ["pwconv1", "pwconv2"],
+    # Pure CNN families — only the classification head is Linear
+    "resnet": ["fc"],
+    "efficientnet": ["classifier"],
+    "mobilenet": ["classifier"],
+    "regnet": ["fc"],
+    "densenet": ["classifier"],
+}
+
+# Head module names to keep fully trainable alongside LoRA weights (modules_to_save)
+_HEAD_MODULE_NAMES = ["head", "fc", "classifier"]
+
+
+class BottleneckAdapter(nn.Module):
+    """Residual bottleneck adapter: LayerNorm → down → GELU → drop → up → residual.
+
+    Initialised near-zero so the adapter starts as an approximate identity,
+    preserving the pretrained backbone's representations at the start of training.
+    """
+
+    def __init__(self, in_dim: int, bottleneck_dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.norm = nn.LayerNorm(in_dim)
+        self.down = nn.Linear(in_dim, bottleneck_dim)
+        self.act = nn.GELU()
+        self.drop = nn.Dropout(dropout)
+        self.up = nn.Linear(bottleneck_dim, in_dim)
+
+        # Near-zero init so adapter ≈ identity at t=0
+        nn.init.normal_(self.down.weight, std=1e-3)
+        nn.init.zeros_(self.down.bias)
+        nn.init.zeros_(self.up.weight)
+        nn.init.zeros_(self.up.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.up(self.drop(self.act(self.down(self.norm(x)))))
+
+
+class _AdapterModel(nn.Module):
+    """Wraps a feature-only timm backbone with a bottleneck adapter and a new head.
+
+    The backbone is frozen; only adapter + head are trained.
+    Works for both CNN (B, C, H, W output) and transformer (B, N, C output) backbones.
+    """
+
+    def __init__(
+        self,
+        backbone: nn.Module,
+        adapter: BottleneckAdapter,
+        head: nn.Linear,
+    ):
+        super().__init__()
+        self.backbone = backbone
+        self.adapter = adapter
+        self.head = head
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        features = self.backbone(x)  # backbone reset to num_classes=0 returns pooled features
+        features = self.adapter(features)
+        return self.head(features)
 
 
 class RealTrainer(Trainer):
@@ -62,6 +140,12 @@ class RealTrainer(Trainer):
             self.device = torch.device("cpu")
 
         logger.info(f"RealTrainer initialized with device: {self.device}")
+
+        # Mixed-precision (AMP) — only effective on CUDA; no-op on CPU/MPS
+        self._use_amp = self.device.type == "cuda"
+        self._scaler = GradScaler(enabled=self._use_amp)
+        if self._use_amp:
+            logger.info("AMP (mixed precision) enabled")
 
         if not FVCORE_AVAILABLE:
             logger.warning(
@@ -99,18 +183,47 @@ class RealTrainer(Trainer):
         self.model = self._create_model(config, dataset_info)
         self.model = self.model.to(self.device)
 
+        total_params = sum(p.numel() for p in self.model.parameters())
+        logger.info(f"Model total params: {total_params:,}")
+
         # Profile FLOPs once before training (cached for efficiency)
         self._profile_flops_once(train_loader, config)
 
-        # Apply fine-tuning strategy
+        # Apply fine-tuning strategy (may replace self.model with a wrapper)
         self._apply_finetuning_strategy(config)
+
+        # Re-move to device in case _apply_finetuning_strategy replaced self.model
+        # (e.g., _AdapterModel wraps the backbone with new adapter + head on CPU)
+        self.model = self.model.to(self.device)
+
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        logger.info(
+            f"Trainable params after {config.strategy.strategy_type.value}: "
+            f"{trainable_params:,} / {total_params:,} "
+            f"({100 * trainable_params / max(total_params, 1):.1f}%)"
+        )
 
         # Create optimizer and scheduler
         self.optimizer = self._create_optimizer(config)
         self.scheduler = self._create_scheduler(config, len(train_loader))
 
-        # Loss function
-        criterion = nn.CrossEntropyLoss(label_smoothing=config.label_smoothing)
+        # Loss function — use class-weighted loss for highly imbalanced datasets
+        if dataset_info.class_balance == "highly_imbalanced":
+            try:
+                targets = [int(train_loader.dataset[i][1]) for i in range(len(train_loader.dataset))]
+                target_tensor = torch.tensor(targets)
+                num_classes = dataset_info.num_classes
+                counts = torch.bincount(target_tensor, minlength=num_classes).float().clamp(min=1)
+                class_weights = (counts.sum() / (num_classes * counts)).to(self.device)
+                criterion = nn.CrossEntropyLoss(
+                    weight=class_weights, label_smoothing=config.label_smoothing
+                )
+                logger.info("Using class-weighted CrossEntropyLoss for highly_imbalanced dataset")
+            except Exception as e:
+                logger.warning(f"Could not compute class weights: {e}. Using standard loss.")
+                criterion = nn.CrossEntropyLoss(label_smoothing=config.label_smoothing)
+        else:
+            criterion = nn.CrossEntropyLoss(label_smoothing=config.label_smoothing)
 
         # Training history
         train_loss_history = []
@@ -126,6 +239,7 @@ class RealTrainer(Trainer):
         # Training loop
         for epoch in range(1, config.epochs + 1):
             epochs_trained = epoch
+            epoch_start = time.time()
 
             # Train epoch
             train_loss = await self._train_epoch(
@@ -137,14 +251,22 @@ class RealTrainer(Trainer):
                 val_loader, criterion, dataset_info
             )
 
+            epoch_elapsed = time.time() - epoch_start
             train_loss_history.append(train_loss)
             val_loss_history.append(val_loss)
             metric_history.append(metric)
 
+            gpu_mem_str = ""
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated(self.device) / 1024**3
+                reserved = torch.cuda.memory_reserved(self.device) / 1024**3
+                gpu_mem_str = f", GPU mem: {allocated:.2f}/{reserved:.2f}GB alloc/reserved"
+
             logger.info(
                 f"Epoch {epoch}/{config.epochs} - "
-                f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, "
-                f"{dataset_info.primary_metric.value}: {metric:.4f}"
+                f"train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, "
+                f"{dataset_info.primary_metric.value}={metric:.4f}, "
+                f"time={epoch_elapsed:.1f}s{gpu_mem_str}"
             )
 
             # Track best
@@ -304,12 +426,24 @@ class RealTrainer(Trainer):
                     dataset_info, val_transform, is_train=False
                 )
 
+        pin = self.device.type == "cuda"
+
+        # Weighted sampler for imbalanced datasets
+        sampler = None
+        if dataset_info.class_balance in ("slightly_imbalanced", "highly_imbalanced"):
+            sampler = self._build_weighted_sampler(train_dataset)
+            if sampler is not None:
+                logger.info(
+                    f"Using WeightedRandomSampler for {dataset_info.class_balance} dataset"
+                )
+
         train_loader = DataLoader(
             train_dataset,
             batch_size=config.batch_size,
-            shuffle=True,
+            shuffle=(sampler is None),  # mutually exclusive with sampler
+            sampler=sampler,
             num_workers=self.num_workers,
-            pin_memory=True if self.device.type == "cuda" else False,
+            pin_memory=pin,
         )
 
         val_loader = DataLoader(
@@ -317,10 +451,30 @@ class RealTrainer(Trainer):
             batch_size=config.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
-            pin_memory=True if self.device.type == "cuda" else False,
+            pin_memory=pin,
         )
 
         return train_loader, val_loader
+
+    def _build_weighted_sampler(self, dataset) -> Optional[WeightedRandomSampler]:
+        """Build a WeightedRandomSampler that up-samples minority classes."""
+        try:
+            targets = [int(dataset[i][1]) for i in range(len(dataset))]
+            target_tensor = torch.tensor(targets)
+            num_classes = int(target_tensor.max().item()) + 1
+            class_counts = torch.bincount(target_tensor, minlength=num_classes).float()
+            # Avoid division by zero for missing classes
+            class_counts = class_counts.clamp(min=1)
+            class_weights = 1.0 / class_counts
+            sample_weights = class_weights[target_tensor]
+            return WeightedRandomSampler(
+                weights=sample_weights,
+                num_samples=len(sample_weights),
+                replacement=True,
+            )
+        except Exception as e:
+            logger.warning(f"Could not build weighted sampler: {e}. Using uniform shuffle.")
+            return None
 
     def _load_torchvision_dataset(
         self,
@@ -424,15 +578,20 @@ class RealTrainer(Trainer):
         return model
 
     def _apply_finetuning_strategy(self, config: TrainingConfig):
-        """Apply fine-tuning strategy to model."""
+        """Apply fine-tuning strategy to model.
+
+        For LORA and ADAPTER, self.model may be replaced with a wrapped version.
+        All other code (optimizer, training loop) operates on self.model after this call.
+        """
+        if config.strategy.strategy_type == FinetuningType.LORA:
+            self._apply_lora(config)
+            return
+        elif config.strategy.strategy_type == FinetuningType.ADAPTER:
+            self._apply_adapter(config)
+            return
 
         if config.strategy.strategy_type == FinetuningType.HEAD_ONLY:
-            # Freeze all layers except classifier
-            for name, param in self.model.named_parameters():
-                if "classifier" not in name and "fc" not in name and "head" not in name:
-                    param.requires_grad = False
-
-            logger.info("Applied HEAD_ONLY strategy: backbone frozen")
+            self._apply_head_only()
 
         elif config.strategy.strategy_type == FinetuningType.FULL_FINETUNING:
             # All parameters trainable
@@ -490,6 +649,103 @@ class RealTrainer(Trainer):
             groups.append(current_group)
 
         return groups
+
+    # ------------------------------------------------------------------
+    # PEFT strategies
+    # ------------------------------------------------------------------
+
+    def _apply_lora(self, config: TrainingConfig) -> None:
+        """Apply LoRA via the peft library.
+
+        Target modules are selected per backbone family so LoRA is applied to
+        the most semantically rich linear projections available. Falls back to
+        HEAD_ONLY if peft is not installed.
+        """
+        if not PEFT_AVAILABLE:
+            logger.warning(
+                "peft not installed — falling back to head_only. "
+                "Install with: pip install peft"
+            )
+            self._apply_head_only()
+            return
+
+        family = config.backbone.family
+        target_modules = _LORA_TARGET_MODULES.get(family, ["fc", "classifier", "head"])
+
+        lora_cfg = LoraConfig(
+            r=config.strategy.lora_rank,
+            lora_alpha=config.strategy.lora_alpha,
+            target_modules=target_modules,
+            lora_dropout=config.strategy.lora_dropout,
+            bias="none",
+            # Keep head/classifier fully trainable (not LoRA-adapted)
+            modules_to_save=_HEAD_MODULE_NAMES,
+        )
+
+        try:
+            self.model = get_peft_model(self.model, lora_cfg)
+            trainable, total = self.model.get_nb_trainable_parameters()
+            pct = 100.0 * trainable / max(total, 1)
+            logger.info(
+                f"LoRA applied (rank={config.strategy.lora_rank}, "
+                f"alpha={config.strategy.lora_alpha}, "
+                f"targets={target_modules}): "
+                f"{trainable:,}/{total:,} trainable params ({pct:.2f}%)"
+            )
+        except Exception as e:
+            logger.warning(f"LoRA application failed ({e}) — falling back to head_only")
+            self._apply_head_only()
+
+    def _apply_adapter(self, config: TrainingConfig) -> None:
+        """Replace model with a frozen backbone + BottleneckAdapter + new head.
+
+        Works universally on both CNN and transformer timm models.
+        Only the adapter and head weights are trained.
+        """
+        num_features = getattr(self.model, "num_features", None)
+        num_classes = getattr(self.model, "num_classes", None)
+
+        if num_features is None or num_classes is None:
+            logger.warning(
+                "Model does not expose num_features/num_classes — "
+                "falling back to head_only strategy"
+            )
+            self._apply_head_only()
+            return
+
+        # Remove the existing head; backbone.forward() will now return pooled features
+        self.model.reset_classifier(0)
+
+        # Freeze backbone
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+        adapter = BottleneckAdapter(
+            in_dim=num_features,
+            bottleneck_dim=config.strategy.adapter_size,
+            dropout=config.dropout,
+        )
+        head = nn.Linear(num_features, num_classes)
+
+        # Replace self.model with the wrapper (moves to device in train())
+        self.model = _AdapterModel(self.model, adapter, head)
+
+        trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in self.model.parameters())
+        pct = 100.0 * trainable / max(total, 1)
+        logger.info(
+            f"Adapter applied (size={config.strategy.adapter_size}): "
+            f"{trainable:,}/{total:,} trainable params ({pct:.2f}%)"
+        )
+
+    def _apply_head_only(self) -> None:
+        """Freeze all layers except the classification head (shared fallback)."""
+        for name, param in self.model.named_parameters():
+            if not any(h in name for h in ("classifier", "fc", "head")):
+                param.requires_grad = False
+        logger.info("Applied HEAD_ONLY strategy: backbone frozen")
+
+    # ------------------------------------------------------------------
 
     def _unfreeze_next_layer(self):
         """Unfreeze the next layer group."""
@@ -646,14 +902,17 @@ class RealTrainer(Trainer):
             data, target = data.to(self.device), target.to(self.device)
 
             self.optimizer.zero_grad()
-            output = self.model(data)
-            loss = criterion(output, target)
-            loss.backward()
 
-            # Gradient clipping
+            with autocast(enabled=self._use_amp):
+                output = self.model(data)
+                loss = criterion(output, target)
+
+            self._scaler.scale(loss).backward()
+            # Unscale before clipping so clip operates on true gradients
+            self._scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-
-            self.optimizer.step()
+            self._scaler.step(self.optimizer)
+            self._scaler.update()
 
             total_loss += loss.item()
             num_batches += 1

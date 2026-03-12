@@ -37,6 +37,8 @@ class FinetuningType(str, Enum):
     HEAD_ONLY = "head_only"
     GRADUAL_UNFREEZING = "gradual_unfreezing"
     DISCRIMINATIVE_LR = "discriminative_lr"
+    LORA = "lora"
+    ADAPTER = "adapter"
 
 
 class DatasetInfo(BaseModel):
@@ -81,8 +83,8 @@ class DatasetInfo(BaseModel):
     @field_validator("image_size")
     @classmethod
     def validate_image_size(cls, v):
-        if v[0] < 28 or v[1] < 28:
-            raise ValueError("Image size must be at least 28x28")
+        if v[0] < 16 or v[1] < 16:
+            raise ValueError("Image size must be at least 16x16")
         return v
 
 
@@ -128,6 +130,33 @@ class FinetuningStrategy(BaseModel):
     layer_lr_decay: Optional[float] = Field(
         default=None,
         description="Learning rate decay per layer (for discriminative_lr)",
+    )
+
+    # LoRA-specific parameters
+    lora_rank: int = Field(
+        default=16,
+        ge=1,
+        le=128,
+        description="Rank of LoRA decomposition matrices (for lora strategy)",
+    )
+    lora_alpha: float = Field(
+        default=32.0,
+        gt=0,
+        description="LoRA alpha scaling factor; effective LR = lr * alpha / rank",
+    )
+    lora_dropout: float = Field(
+        default=0.1,
+        ge=0,
+        le=0.5,
+        description="Dropout applied to LoRA layers",
+    )
+
+    # Adapter-specific parameters
+    adapter_size: int = Field(
+        default=64,
+        ge=8,
+        le=1024,
+        description="Bottleneck dimension of the adapter module (for adapter strategy)",
     )
 
 
@@ -264,6 +293,14 @@ class ExecutorResult(BaseModel):
     analysis: str = Field(default="", description="Analysis of the training run")
     suggestions: list[str] = Field(
         default_factory=list, description="Suggestions for next iteration"
+    )
+    convergence_assessment: str = Field(
+        default="unknown",
+        description="Convergence state: converged, converging, not_converging, overfitting, unknown",
+    )
+    recommended_changes: dict = Field(
+        default_factory=dict,
+        description="Specific parameter changes recommended by the Executor",
     )
 
     # Performance relative to previous

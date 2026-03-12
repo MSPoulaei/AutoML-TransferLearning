@@ -71,6 +71,18 @@ class Settings(BaseSettings):
     # Database
     database_url: str = Field(default="sqlite:///experiments/experiments.db")
 
+    # Logfire observability (optional)
+    logfire_token: str = Field(
+        default="",
+        description="Logfire token for observability (leave empty to disable)",
+    )
+
+    # Cost guard (optional)
+    max_cost_usd: Optional[float] = Field(
+        default=None,
+        description="Maximum total API spend in USD; None means unlimited",
+    )
+
     @property
     def api_keys_list(self) -> list[str]:
         """Parse comma-separated API keys into list."""

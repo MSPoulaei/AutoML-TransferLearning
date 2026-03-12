@@ -69,6 +69,12 @@ class StrategyRegistry:
         elif strategy_type == FinetuningType.DISCRIMINATIVE_LR:
             if strategy.layer_lr_decay is None:
                 strategy.layer_lr_decay = 0.9
+        elif strategy_type == FinetuningType.LORA:
+            # Standard heuristic: alpha = 2 * rank (unless explicitly overridden)
+            if strategy.lora_alpha == 32.0 and strategy.lora_rank != 16:
+                strategy = strategy.model_copy(
+                    update={"lora_alpha": float(strategy.lora_rank * 2)}
+                )
 
         return strategy
 
@@ -123,5 +129,21 @@ class StrategyRegistry:
                 score += 0.2
             if num_classes > 50:
                 score += 0.1
+
+        elif strategy_type == FinetuningType.LORA:
+            # LoRA shines on transformer-based backbones and medium-to-large datasets.
+            # The LLM will decide whether the chosen backbone supports LoRA well.
+            if num_samples > 2000:
+                score += 0.2
+            if domain in ("fine_grained", "medical", "satellite"):
+                score += 0.15  # domain shift benefits from parameter-efficient adaptation
+
+        elif strategy_type == FinetuningType.ADAPTER:
+            # Adapters work on any backbone and are especially good for very small datasets
+            # (less risk of overfitting than full fine-tuning, more capacity than head_only)
+            if num_samples < 5000:
+                score += 0.25
+            if domain in ("medical", "industrial", "satellite"):
+                score += 0.1  # specialized domains that differ from ImageNet
 
         return min(score, 1.0)

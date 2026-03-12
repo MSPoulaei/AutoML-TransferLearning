@@ -1,4 +1,5 @@
 import asyncio
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -139,6 +140,7 @@ class Orchestrator:
         resume: bool = False,
         early_stopping_patience: int = 3,
         improvement_threshold: float = 0.01,
+        max_cost_usd: Optional[float] = None,
     ) -> OrchestratorState:
         """
         Run the orchestration loop.
@@ -150,10 +152,14 @@ class Orchestrator:
             resume: If True, resume from checkpoint
             early_stopping_patience: Stop if no improvement for this many iterations
             improvement_threshold: Minimum improvement to reset patience
+            max_cost_usd: Stop if cumulative API cost exceeds this (None = unlimited)
 
         Returns:
             Final OrchestratorState
         """
+        if max_cost_usd is not None:
+            logger.info(f"Cost guard active: max_cost_usd=${max_cost_usd:.2f}")
+
         # Setup experiment
         experiment_id = experiment_id or generate_experiment_id()
 
@@ -213,9 +219,15 @@ class Orchestrator:
                 progress.update(task, description=f"Iteration {iteration}/{budget}...")
 
                 try:
+                    iteration_start = time.time()
+
                     # Run analyzer
                     console.print(f"\n[bold blue]Iteration {iteration}[/bold blue]")
                     console.print("[yellow]Analyzer Agent thinking...[/yellow]")
+                    logger.info(
+                        f"[Iteration {iteration}/{budget}] Starting — "
+                        f"budget remaining: {self._budget_manager.remaining}"
+                    )
 
                     recommendation = await self.analyzer.run(
                         dataset_info=dataset_info,
@@ -224,6 +236,17 @@ class Orchestrator:
                         total_budget=budget,
                     )
 
+                    logger.info(
+                        f"[Iteration {iteration}] Analyzer recommendation: "
+                        f"backbone={recommendation.training_config.backbone.full_name}, "
+                        f"strategy={recommendation.training_config.strategy.strategy_type.value}, "
+                        f"lr={recommendation.training_config.strategy.learning_rate}, "
+                        f"epochs={recommendation.training_config.epochs}, "
+                        f"expected={recommendation.expected_performance:.4f}, "
+                        f"confidence={recommendation.confidence:.2f}, "
+                        f"tokens={recommendation.total_tokens}, "
+                        f"cost=${recommendation.api_cost:.4f}"
+                    )
                     console.print(
                         f"  → Backbone: {recommendation.training_config.backbone.full_name}"
                     )
@@ -246,9 +269,15 @@ class Orchestrator:
 
                     if result.success and result.training_result:
                         metric_value = result.training_result.primary_metric_value
+                        improvement_str = (
+                            f"{result.improvement:+.4f}" if result.improvement is not None else "N/A"
+                        )
                         console.print(
                             f"  → Result: {dataset_info.primary_metric.value}="
-                            f"{metric_value:.4f}"
+                            f"{metric_value:.4f} (Δ {improvement_str})"
+                        )
+                        console.print(
+                            f"  → Convergence: {result.convergence_assessment}"
                         )
 
                         if result.is_best_so_far:
@@ -263,14 +292,84 @@ class Orchestrator:
                                 no_improvement_count += 1
                             else:
                                 no_improvement_count = 0
+
+                        logger.info(
+                            f"[Iteration {iteration}] metric={metric_value:.4f}, "
+                            f"improvement={improvement_str}, "
+                            f"convergence={result.convergence_assessment}, "
+                            f"no_improve_streak={no_improvement_count}/{early_stopping_patience}"
+                        )
                     else:
+                        logger.error(
+                            f"[Iteration {iteration}] Training failed: {result.error_message}"
+                        )
                         console.print(
                             f"[red]  → Training failed: {result.error_message}[/red]"
                         )
 
+                    # Per-iteration timing and cost
+                    iteration_elapsed = time.time() - iteration_start
+                    iter_cost = recommendation.api_cost + result.api_cost
+                    iter_tokens = recommendation.total_tokens + result.total_tokens
+                    cumulative_cost = sum(
+                        r.total_api_cost for r in self._state.experiment_history
+                    ) + iter_cost
+
+                    logger.info(
+                        f"[Iteration {iteration}/{budget}] Done — "
+                        f"elapsed: {iteration_elapsed:.1f}s, "
+                        f"tokens: {iter_tokens}, "
+                        f"cost: ${iter_cost:.4f}, "
+                        f"cumulative cost: ${cumulative_cost:.4f}"
+                    )
+
+                    console.print(
+                        f"  → Cost: ${iter_cost:.4f} | Cumulative: ${cumulative_cost:.4f}"
+                    )
+
+                    # Cost guard
+                    if max_cost_usd is not None and cumulative_cost >= max_cost_usd:
+                        console.print(
+                            f"\n[yellow]Cost budget ${max_cost_usd:.2f} reached "
+                            f"(spent ${cumulative_cost:.4f}). Stopping.[/yellow]"
+                        )
+                        logger.warning(
+                            f"Cost guard triggered: ${cumulative_cost:.4f} >= ${max_cost_usd:.2f}"
+                        )
+                        # Record then break
+                        total_tokens = iter_tokens
+                        total_cost = iter_cost
+                        total_flops = (
+                            result.training_result.total_flops
+                            if result.training_result
+                            else 0.0
+                        )
+                        record = ExperimentRecord(
+                            experiment_id=experiment_id,
+                            iteration=iteration,
+                            dataset_info=dataset_info,
+                            recommendation=recommendation,
+                            result=result,
+                            api_calls_used=self.analyzer.call_count + self.executor.call_count,
+                            compute_time_seconds=(
+                                result.training_result.training_time_seconds
+                                if result.training_result else 0
+                            ),
+                            total_tokens_used=total_tokens,
+                            total_api_cost=total_cost,
+                            total_flops=total_flops,
+                        )
+                        self._state.experiment_history.append(record)
+                        previous_results.append(result)
+                        self.experiment_tracker.record_experiment(record)
+                        self._budget_manager.consume()
+                        self._state.remaining_budget = self._budget_manager.remaining
+                        self.checkpoint_manager.save(self._state)
+                        break
+
                     # Record experiment
-                    total_tokens = recommendation.total_tokens + result.total_tokens
-                    total_cost = recommendation.api_cost + result.api_cost
+                    total_tokens = iter_tokens
+                    total_cost = iter_cost
                     total_flops = (
                         result.training_result.total_flops
                         if result.training_result
@@ -283,8 +382,7 @@ class Orchestrator:
                         dataset_info=dataset_info,
                         recommendation=recommendation,
                         result=result,
-                        api_calls_used=self.analyzer.call_count
-                        + self.executor.call_count,
+                        api_calls_used=self.analyzer.call_count + self.executor.call_count,
                         compute_time_seconds=(
                             result.training_result.training_time_seconds
                             if result.training_result
@@ -397,7 +495,36 @@ class Orchestrator:
             "Total Compute Time", f"{budget_summary['compute_time_seconds']:.1f}s"
         )
 
+        # Aggregate cost and FLOPs across all recorded iterations
+        total_api_cost = sum(
+            r.total_api_cost for r in self._state.experiment_history
+        )
+        total_tokens_all = sum(
+            r.total_tokens_used for r in self._state.experiment_history
+        )
+        total_flops_all = sum(
+            r.total_flops for r in self._state.experiment_history
+        )
+
+        table.add_row("Total API Cost", f"${total_api_cost:.4f}")
+        table.add_row("Total Tokens", f"{total_tokens_all:,}")
+        table.add_row(
+            "Analyzer Model", self.analyzer.model_name
+        )
+        table.add_row(
+            "Executor Model", self.executor.model_name
+        )
+        if total_flops_all > 0:
+            table.add_row("Total Training FLOPs", f"{total_flops_all:.2e}")
+
         console.print(table)
+
+        logger.info(
+            f"Experiment {self._state.experiment_id} complete — "
+            f"best={self._state.best_metric_value}, "
+            f"iterations={len(self._state.experiment_history)}, "
+            f"cost=${total_api_cost:.4f}, tokens={total_tokens_all}"
+        )
 
         # API key stats from both agents
         analyzer_stats = self.analyzer_key_manager.get_stats()

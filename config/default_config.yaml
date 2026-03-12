@@ -85,6 +85,45 @@ backbones:
       mobilenetv3_small_100: 256
       mobilenetv3_large_100: 384
 
+  swin_transformer:
+    variants:
+      ["swin_tiny_patch4_window7_224", "swin_small_patch4_window7_224",
+       "swin_base_patch4_window7_224", "swin_large_patch4_window7_224"]
+    pretrained: true
+    memory_estimates_mb:
+      swin_tiny_patch4_window7_224: 512
+      swin_small_patch4_window7_224: 896
+      swin_base_patch4_window7_224: 1536
+      swin_large_patch4_window7_224: 2560
+
+  deit:
+    variants:
+      ["deit_tiny_patch16_224", "deit_small_patch16_224", "deit_base_patch16_224"]
+    pretrained: true
+    memory_estimates_mb:
+      deit_tiny_patch16_224: 384
+      deit_small_patch16_224: 768
+      deit_base_patch16_224: 1280
+
+  regnet:
+    variants:
+      ["regnety_002", "regnety_004", "regnety_008", "regnety_016", "regnety_032"]
+    pretrained: true
+    memory_estimates_mb:
+      regnety_002: 256
+      regnety_004: 384
+      regnety_008: 512
+      regnety_016: 768
+      regnety_032: 1024
+
+  densenet:
+    variants: ["densenet121", "densenet169", "densenet201"]
+    pretrained: true
+    memory_estimates_mb:
+      densenet121: 640
+      densenet169: 896
+      densenet201: 1152
+
 # Fine-tuning strategies
 finetuning_strategies:
   - name: "full_finetuning"
@@ -102,6 +141,20 @@ finetuning_strategies:
   - name: "discriminative_lr"
     description: "Different learning rates for different layers"
     memory_multiplier: 3.0
+
+  - name: "lora"
+    description: "Low-Rank Adaptation (LoRA) - adds trainable rank-decomposition matrices to attention/linear layers; only ~1% of params are updated; requires peft library"
+    memory_multiplier: 1.5
+    defaults:
+      lora_rank: 16
+      lora_alpha: 32.0
+      lora_dropout: 0.1
+
+  - name: "adapter"
+    description: "Bottleneck adapter - frozen backbone + learnable bottleneck module (down-proj -> GELU -> up-proj) inserted before the classification head; works on any architecture"
+    memory_multiplier: 1.3
+    defaults:
+      adapter_size: 64
 
 # Training defaults
 training:

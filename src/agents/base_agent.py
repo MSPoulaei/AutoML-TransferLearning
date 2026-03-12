@@ -117,6 +117,7 @@ class BaseAgent(ABC):
         self.temperature = temperature
         self.max_retries = max_retries
         self._agent: Optional[Agent] = None
+        self._agent_cache_key: Optional[tuple] = None  # (result_type_id, api_key)
         self._current_key: Optional[str] = None
         self._call_count = 0
         self._current_result_type: Optional[type] = None
@@ -138,22 +139,27 @@ class BaseAgent(ABC):
         pass
 
     async def _create_agent(self, result_type: type) -> Agent:
-        """Create a pydantic-ai agent with current API key."""
+        """Return a cached pydantic-ai agent, creating one only when necessary.
+
+        The agent is recreated only when the API key rotates or the result type
+        changes — avoiding redundant object construction on every iteration.
+        """
         self._current_key = await self.key_manager.get_key()
-        self._current_result_type = result_type  # Store for recreating agent
+        self._current_result_type = result_type
+
+        cache_key = (id(result_type), self._current_key)
+        if self._agent is not None and self._agent_cache_key == cache_key:
+            logger.debug(f"Reusing cached agent for {self.__class__.__name__}")
+            return self._agent
+
+        logger.debug(f"Creating new agent for {self.__class__.__name__} (key rotated or first call)")
 
         # Set API key in environment for pydantic-ai to use
-        # This is a temporary workaround - pydantic-ai will pick it up automatically
         os.environ["OPENAI_API_KEY"] = self._current_key
         if self.base_url != "https://api.openai.com/v1":
             os.environ["OPENAI_BASE_URL"] = self.base_url
 
-        # Create the model - it will use the environment variables
-        # Configure model settings to avoid issues with non-standard API responses
-        model = OpenAIChatModel(
-            self.model_name,
-            # Don't request service_tier in responses to avoid validation errors
-        )
+        model = OpenAIChatModel(self.model_name)
 
         agent = Agent(
             model,
@@ -161,6 +167,8 @@ class BaseAgent(ABC):
             instructions=self._get_system_prompt(),
         )
 
+        self._agent = agent
+        self._agent_cache_key = cache_key
         return agent
 
     async def _execute_with_retry(
@@ -197,8 +205,9 @@ class BaseAgent(ABC):
                 retry_after = getattr(e, "retry_after", None)
                 await self.key_manager.report_rate_limit(self._current_key, retry_after)
 
-                # Get new key and recreate agent
+                # Get new key — cache is invalidated inside _create_agent
                 self._current_key = await self.key_manager.get_key()
+                self._agent_cache_key = None  # Force recreation with new key
                 agent = await self._create_agent(self._current_result_type)
 
                 last_exception = e
@@ -234,8 +243,8 @@ class BaseAgent(ABC):
                 last_exception = e
 
                 if attempt < self.max_retries - 1:
-                    # Try with different key
                     self._current_key = await self.key_manager.get_key()
+                    self._agent_cache_key = None  # Force recreation with new key
                     agent = await self._create_agent(self._current_result_type)
 
         raise last_exception or RuntimeError("Agent execution failed")

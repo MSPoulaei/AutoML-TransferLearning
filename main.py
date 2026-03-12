@@ -302,6 +302,12 @@ def run(
         "-o",
         help="Directory to save zip file (default: current directory)",
     ),
+    # Cost guard
+    max_cost: Optional[float] = typer.Option(
+        None,
+        "--max-cost",
+        help="Maximum total API spend in USD (default: unlimited)",
+    ),
 ):
     """
     Run the transfer learning orchestration.
@@ -317,7 +323,11 @@ def run(
     """
     # Setup logging
     settings = get_settings()
-    setup_logging(log_level=log_level, log_file=settings.log_file)
+    setup_logging(
+        log_level=log_level,
+        log_file=settings.log_file,
+        logfire_token=settings.logfire_token or None,
+    )
 
     # Validate API keys
     if not settings.api_keys_list:
@@ -423,6 +433,7 @@ def run(
                 resume=resume,
                 early_stopping_patience=early_stopping_patience,
                 improvement_threshold=improvement_threshold,
+                max_cost_usd=max_cost if max_cost is not None else settings.max_cost_usd,
             )
         )
 
@@ -464,7 +475,7 @@ def run(
 def list_experiments():
     """List all experiments with checkpoints."""
     settings = get_settings()
-    setup_logging(log_level="WARNING")
+    setup_logging(log_level="WARNING", logfire_token=get_settings().logfire_token or None)
 
     from src.orchestrator import CheckpointManager, ExperimentTracker
 
@@ -508,7 +519,7 @@ def show_experiment(
 ):
     """Show detailed information about an experiment."""
     settings = get_settings()
-    setup_logging(log_level="WARNING")
+    setup_logging(log_level="WARNING", logfire_token=get_settings().logfire_token or None)
 
     from src.orchestrator import ExperimentTracker
 
@@ -548,7 +559,11 @@ def resume_experiment(
 ):
     """Resume a paused or failed experiment."""
     settings = get_settings()
-    setup_logging(log_level="INFO", log_file=settings.log_file)
+    setup_logging(
+        log_level="INFO",
+        log_file=settings.log_file,
+        logfire_token=settings.logfire_token or None,
+    )
 
     from src.orchestrator import CheckpointManager
 
@@ -568,14 +583,31 @@ def resume_experiment(
     # Save updated state
     checkpoint_manager.save(state)
 
-    # Initialize orchestrator
+    # Initialize orchestrator with full per-agent settings (mirrors the `run` command)
     orchestrator = Orchestrator(
         api_keys=settings.api_keys_list,
         model_name=settings.openai_model,
+        base_url=settings.openai_base_url,
         memory_limit_gb=settings.memory_limit_gb,
         simulation_mode=simulation,
         checkpoint_dir=settings.checkpoint_dir,
         database_url=settings.database_url,
+        max_retries=settings.max_retries_per_key,
+        rate_limit_cooldown=settings.rate_limit_retry_delay,
+        analyzer_api_keys=(
+            settings.get_agent_api_keys("analyzer")
+            if settings.analyzer_api_keys
+            else None
+        ),
+        analyzer_model=settings.get_agent_model("analyzer"),
+        analyzer_base_url=settings.get_agent_base_url("analyzer"),
+        executor_api_keys=(
+            settings.get_agent_api_keys("executor")
+            if settings.executor_api_keys
+            else None
+        ),
+        executor_model=settings.get_agent_model("executor"),
+        executor_base_url=settings.get_agent_base_url("executor"),
     )
 
     # Run with resume
@@ -723,6 +755,12 @@ def list_datasets():
     """List available dataset presets."""
     from rich.table import Table
 
+    # All preset names supported by get_dataset_preset
+    preset_names = [
+        "cifar10", "cifar100", "mnist", "fashion_mnist",
+        "svhn", "stanford_cars", "fgvc_aircraft", "imagenet",
+    ]
+
     table = Table(title="Available Dataset Presets")
     table.add_column("Name", style="cyan")
     table.add_column("Classes", style="green")
@@ -730,51 +768,14 @@ def list_datasets():
     table.add_column("Image Size", style="magenta")
     table.add_column("Domain", style="blue")
 
-    presets = {
-        "cifar10": {
-            "num_classes": 10,
-            "num_samples": 50000,
-            "image_size": "32x32",
-            "domain": "natural",
-        },
-        "cifar100": {
-            "num_classes": 100,
-            "num_samples": 50000,
-            "image_size": "32x32",
-            "domain": "fine_grained",
-        },
-        "mnist": {
-            "num_classes": 10,
-            "num_samples": 60000,
-            "image_size": "28x28",
-            "domain": "document",
-        },
-        "fashion_mnist": {
-            "num_classes": 10,
-            "num_samples": 60000,
-            "image_size": "28x28",
-            "domain": "natural",
-        },
-        "svhn": {
-            "num_classes": 10,
-            "num_samples": 73257,
-            "image_size": "32x32",
-            "domain": "document",
-        },
-        "imagenet": {
-            "num_classes": 1000,
-            "num_samples": 1281167,
-            "image_size": "224x224",
-            "domain": "natural",
-        },
-    }
-
-    for name, info in presets.items():
+    for name in preset_names:
+        info = get_dataset_preset(name)
+        h, w = info["image_height"], info["image_width"]
         table.add_row(
             name,
             str(info["num_classes"]),
             str(info["num_samples"]),
-            info["image_size"],
+            f"{h}x{w}",
             info["domain"],
         )
 

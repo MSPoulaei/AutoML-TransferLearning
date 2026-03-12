@@ -54,11 +54,13 @@ class BackboneRegistry:
 
         # Estimate number of features based on backbone
         feature_map = {
+            # ResNet
             "resnet18": 512,
             "resnet34": 512,
             "resnet50": 2048,
             "resnet101": 2048,
             "resnet152": 2048,
+            # EfficientNet
             "efficientnet_b0": 1280,
             "efficientnet_b1": 1280,
             "efficientnet_b2": 1408,
@@ -67,16 +69,38 @@ class BackboneRegistry:
             "efficientnet_b5": 2048,
             "efficientnet_b6": 2304,
             "efficientnet_b7": 2560,
+            # ViT
             "vit_tiny_patch16_224": 192,
             "vit_small_patch16_224": 384,
             "vit_base_patch16_224": 768,
             "vit_large_patch16_224": 1024,
+            # ConvNeXt
             "convnext_tiny": 768,
             "convnext_small": 768,
             "convnext_base": 1024,
             "convnext_large": 1536,
+            # MobileNet
             "mobilenetv3_small_100": 576,
             "mobilenetv3_large_100": 960,
+            # Swin Transformer
+            "swin_tiny_patch4_window7_224": 768,
+            "swin_small_patch4_window7_224": 768,
+            "swin_base_patch4_window7_224": 1024,
+            "swin_large_patch4_window7_224": 1536,
+            # DeiT
+            "deit_tiny_patch16_224": 192,
+            "deit_small_patch16_224": 384,
+            "deit_base_patch16_224": 768,
+            # RegNet
+            "regnety_002": 368,
+            "regnety_004": 440,
+            "regnety_008": 768,
+            "regnety_016": 888,
+            "regnety_032": 1512,
+            # DenseNet
+            "densenet121": 1024,
+            "densenet169": 1664,
+            "densenet201": 1920,
         }
 
         return BackboneConfig(
@@ -154,12 +178,25 @@ class BackboneRegistry:
 
         # Domain considerations
         if domain in ["medical", "satellite"]:
-            # Specialized domains - ResNet often works well
             if family == "resnet":
                 score += 0.1
+            elif family == "densenet":
+                score += 0.1  # DenseNet also strong on medical imaging
         elif domain == "fine_grained":
-            # Fine-grained - EfficientNet often better
             if family == "efficientnet":
                 score += 0.15
+            elif family == "swin_transformer":
+                score += 0.15  # Hierarchical features suit fine-grained tasks
+        elif domain in ["natural", "other"]:
+            if family in ("swin_transformer", "convnext"):
+                score += 0.1  # Modern CNN/hybrid architectures excel on natural images
+        elif domain == "document":
+            if family in ("deit", "vit"):
+                score += 0.1  # Transformers capture global layout in documents
+
+        # Efficiency preference for small datasets
+        if num_samples < 1000:
+            if family in ("mobilenet", "regnet"):
+                score += 0.15  # Lightweight models generalise better with little data
 
         return min(score, 1.0)

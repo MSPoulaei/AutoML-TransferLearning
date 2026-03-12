@@ -165,6 +165,8 @@ class BaseAgent(ABC):
             model,
             output_type=result_type,
             instructions=self._get_system_prompt(),
+            name=self.__class__.__name__,
+            retries=self.max_retries,
         )
 
         self._agent = agent

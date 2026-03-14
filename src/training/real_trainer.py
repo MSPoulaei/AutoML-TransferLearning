@@ -1,4 +1,5 @@
 import asyncio
+import math
 import os
 import time
 from pathlib import Path
@@ -315,10 +316,16 @@ class RealTrainer(Trainer):
             else 0
         )
 
+        def _safe(v: float) -> float:
+            return 0.0 if not math.isfinite(v) else v
+
+        train_loss_history = [_safe(x) for x in train_loss_history]
+        val_loss_history = [_safe(x) for x in val_loss_history]
+
         result = TrainingResult(
             config=config,
-            train_loss=train_loss_history[-1],
-            val_loss=val_loss_history[-1],
+            train_loss=train_loss_history[-1] if train_loss_history else 0.0,
+            val_loss=val_loss_history[-1] if val_loss_history else 0.0,
             primary_metric_value=best_metric,
             primary_metric_name=dataset_info.primary_metric,
             secondary_metrics={},
@@ -898,6 +905,7 @@ class RealTrainer(Trainer):
             leave=False,
         )
 
+        nan_batches = 0
         for batch_idx, (data, target) in enumerate(pbar):
             data, target = data.to(self.device), target.to(self.device)
 
@@ -907,6 +915,18 @@ class RealTrainer(Trainer):
                 output = self.model(data)
                 loss = criterion(output, target)
 
+            loss_val = loss.item()
+            if not math.isfinite(loss_val):
+                nan_batches += 1
+                logger.warning(
+                    f"Non-finite loss ({loss_val}) at batch {batch_idx}, skipping update"
+                )
+                self.optimizer.zero_grad()
+                # Reset AMP scaler if loss is NaN (may indicate scale overflow)
+                if self._use_amp:
+                    self._scaler.update()
+                continue
+
             self._scaler.scale(loss).backward()
             # Unscale before clipping so clip operates on true gradients
             self._scaler.unscale_(self.optimizer)
@@ -914,16 +934,18 @@ class RealTrainer(Trainer):
             self._scaler.step(self.optimizer)
             self._scaler.update()
 
-            total_loss += loss.item()
+            total_loss += loss_val
             num_batches += 1
 
-            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+            pbar.set_postfix({"loss": f"{loss_val:.4f}"})
 
             # Allow async operations
             if batch_idx % 10 == 0:
                 await asyncio.sleep(0)
 
-        return total_loss / num_batches
+        if nan_batches > 0:
+            logger.warning(f"Epoch had {nan_batches} non-finite loss batches (skipped)")
+        return total_loss / num_batches if num_batches > 0 else float("nan")
 
     async def _validate_epoch(
         self,

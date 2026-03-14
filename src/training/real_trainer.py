@@ -50,17 +50,17 @@ logger = get_logger(__name__)
 # peft matches these against the *last* component of each module's dotted name.
 _LORA_TARGET_MODULES: dict[str, list[str]] = {
     # Transformer families — target attention projections + MLP linear layers
-    "vit": ["qkv", "proj", "fc1", "fc2"],
+    "vit": ["self_attention.in_proj_weight", "self_attention.out_proj", "mlp.0", "mlp.3"],
     "deit": ["qkv", "proj", "fc1", "fc2"],
-    "swin_transformer": ["qkv", "proj", "fc1", "fc2"],
+    "swin_transformer": ["attn.qkv", "attn.proj", "mlp.fc1", "mlp.fc2"],
     # ConvNeXt uses nn.Linear for its MLP blocks (pwconv1/2)
     "convnext": ["pwconv1", "pwconv2"],
-    # Pure CNN families — only the classification head is Linear
-    "resnet": ["fc"],
-    "efficientnet": ["classifier"],
-    "mobilenet": ["classifier"],
-    "regnet": ["fc"],
-    "densenet": ["classifier"],
+    # CNN families — target Conv2d layers in residual/dense/inverted-residual blocks
+    "resnet": ["conv1", "conv2", "conv3"],
+    "efficientnet": ["conv_pw", "conv_pwl"],
+    "mobilenet": ["block.0.0", "block.1.0", "block.2.0", "features.0.0"],
+    "regnet": ["conv"],
+    "densenet": ["conv1", "conv2"],
 }
 
 # Head module names to keep fully trainable alongside LoRA weights (modules_to_save)
@@ -679,6 +679,11 @@ class RealTrainer(Trainer):
         family = config.backbone.family
         target_modules = _LORA_TARGET_MODULES.get(family, ["fc", "classifier", "head"])
 
+        # Exclude from modules_to_save any name already in target_modules to
+        # avoid the PEFT conflict: a module cannot be both LoRA-adapted and saved.
+        target_set = set(target_modules)
+        modules_to_save = [m for m in _HEAD_MODULE_NAMES if m not in target_set]
+
         lora_cfg = LoraConfig(
             r=config.strategy.lora_rank,
             lora_alpha=config.strategy.lora_alpha,
@@ -686,7 +691,7 @@ class RealTrainer(Trainer):
             lora_dropout=config.strategy.lora_dropout,
             bias="none",
             # Keep head/classifier fully trainable (not LoRA-adapted)
-            modules_to_save=_HEAD_MODULE_NAMES,
+            modules_to_save=modules_to_save or None,
         )
 
         try:
